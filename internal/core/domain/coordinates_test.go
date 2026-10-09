@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,24 @@ func TestNewCoordinates(t *testing.T) {
 			must.ErrorIs(err, ErrInvalidCoordinates)
 		}
 	})
+
+	t.Run("non-finite", func(t *testing.T) {
+		must := require.New(t)
+		// NaN passes every range comparison, so it needs its own guard:
+		// strconv.ParseFloat("NaN", 64) succeeds, and a NaN cell key would be
+		// a degenerate shared cell that poisons the cache.
+		for _, pair := range [][2]float64{
+			{math.NaN(), 0},
+			{0, math.NaN()},
+			{math.NaN(), math.NaN()},
+			{math.Inf(1), 0},
+			{0, math.Inf(-1)},
+		} {
+			_, err := NewCoordinates(pair[0], pair[1])
+			must.Error(err)
+			must.ErrorIs(err, ErrInvalidCoordinates)
+		}
+	})
 }
 
 func TestDistanceTo(t *testing.T) {
@@ -42,6 +61,12 @@ func TestDistanceTo(t *testing.T) {
 	london := Coordinates{Lat: 51.5074, Lon: -0.1278}
 	paris := Coordinates{Lat: 48.8566, Lon: 2.3522}
 	is.InDelta(343000, london.DistanceTo(paris), 3000)
+
+	// Near-antipodal pairs push the haversine's a past 1 through float noise;
+	// the clamp keeps the result finite instead of NaN.
+	antipodal := london.DistanceTo(Coordinates{Lat: -88.5, Lon: 1})
+	is.False(math.IsNaN(antipodal))
+	is.Greater(antipodal, 0.0)
 }
 
 func TestCellKey(t *testing.T) {

@@ -28,8 +28,8 @@ type Cache struct {
 type Option func(*Cache)
 
 // WithMaxEntries caps the entry count; the oldest entries are dropped when
-// the cap is exceeded. Zero means unbounded, which is fine for a location
-// history but dangerous if query patterns change.
+// the cap is exceeded. The default is 100_000; pass 0 explicitly for an
+// unbounded cache (dangerous: key count is caller-driven).
 func WithMaxEntries(n int) Option {
 	return func(c *Cache) { c.maxEntries = n }
 }
@@ -44,9 +44,10 @@ func WithClock(now func() time.Time) Option {
 // weeks) mainly bounds staleness after the map survives a street rename.
 func New(ttl time.Duration, opts ...Option) *Cache {
 	c := &Cache{
-		entries: make(map[string]port.Entry),
-		ttl:     ttl,
-		now:     time.Now,
+		entries:    make(map[string]port.Entry),
+		ttl:        ttl,
+		maxEntries: 100_000,
+		now:        time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -54,7 +55,8 @@ func New(ttl time.Duration, opts ...Option) *Cache {
 	return c
 }
 
-// Get returns the entry for key unless it is missing or expired.
+// Get returns the entry for key unless it is missing or expired. The
+// returned slice is a copy; mutating it cannot corrupt the stored entry.
 func (c *Cache) Get(key string) (port.Entry, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[key]
@@ -63,20 +65,26 @@ func (c *Cache) Get(key string) (port.Entry, bool) {
 		return port.Entry{}, false
 	}
 	if c.ttl > 0 && c.now().Sub(entry.StoredAt) > c.ttl {
+		// Re-check under the write lock: a concurrent Set may have replaced
+		// the stale entry with a fresh one, which must not be deleted.
 		c.mu.Lock()
-		delete(c.entries, key)
+		if cur, ok := c.entries[key]; ok && c.now().Sub(cur.StoredAt) > c.ttl {
+			delete(c.entries, key)
+		}
 		c.mu.Unlock()
 		return port.Entry{}, false
 	}
+	entry.Results = slices.Clone(entry.Results)
 	return entry, true
 }
 
-// Set stores the entry, evicting the oldest entries first when the cache is
-// over its cap.
+// Set stores a copy of the entry, evicting the oldest entries first when the
+// cache is over its cap.
 func (c *Cache) Set(key string, entry port.Entry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	entry.Results = slices.Clone(entry.Results)
 	c.entries[key] = entry
 	if c.maxEntries <= 0 || len(c.entries) <= c.maxEntries {
 		return

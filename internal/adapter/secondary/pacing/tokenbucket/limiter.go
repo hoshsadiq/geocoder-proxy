@@ -4,6 +4,7 @@ package tokenbucket
 
 import (
 	"context"
+	"fmt"
 
 	"golang.org/x/time/rate"
 
@@ -19,8 +20,14 @@ type Limiter struct {
 	inner *rate.Limiter
 }
 
-// New returns a Limiter admitting rps calls per second.
+// New returns a Limiter admitting rps calls per second. rps must be
+// positive: at zero or below the limiter would block forever, which is a
+// config error and must fail at startup, not under load. Config that wants
+// no pacing should leave the provider's Limiter nil instead.
 func New(rps float64) *Limiter {
+	if rps <= 0 {
+		panic(fmt.Sprintf("tokenbucket.New: rps must be positive, got %v", rps))
+	}
 	return &Limiter{inner: rate.NewLimiter(rate.Limit(rps), 1)}
 }
 

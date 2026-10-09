@@ -15,6 +15,10 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
 
+// maxForwardTextBytes caps the forward query text, mostly to bound the size
+// of cache keys, which are caller-derived.
+const maxForwardTextBytes = 512
+
 // Provider bundles one upstream geocoder with its limits.
 type Provider struct {
 	Geocoder port.Geocoder
@@ -60,8 +64,16 @@ func WithClock(now func() time.Time) Option {
 // Compile-time guard: the router is the incoming port's implementation.
 var _ port.GeocodeService = (*Router)(nil)
 
-// New wires the router. Providers are tried in order.
+// New wires the router. Providers are tried in order. Misconfiguration is a
+// startup failure, so New panics on nil dependencies rather than letting the
+// first request crash.
 func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...Option) *Router {
+	if cache == nil {
+		panic("service.New: nil cache")
+	}
+	if metrics == nil {
+		panic("service.New: nil metrics")
+	}
 	r := &Router{
 		cache:    cache,
 		metrics:  metrics,
@@ -69,6 +81,9 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 		maxReuse: 25,
 	}
 	for _, p := range providers {
+		if p.Geocoder == nil {
+			panic("service.New: provider with nil geocoder")
+		}
 		var quota *quotaCounter
 		if p.DailyQuota > 0 {
 			quota = newQuotaCounter(p.DailyQuota)
@@ -81,48 +96,24 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 	return r
 }
 
-// Reverse resolves the address nearest to the query point: cache first, then
+// Reverse resolves the places nearest to the query point: cache first, then
 // providers in order. See the package comment for the rules.
-func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) (domain.Result, error) {
-	key := "r:" + q.Coordinates.CellKey()
+func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.Result, error) {
+	key := reverseKey(q)
 
 	if entry, ok := r.cache.Get(key); ok {
-		if reusable(entry.Result, q.Coordinates, r.maxReuse) {
+		if reusable(entry.Results, q.Coordinates, r.maxReuse) {
 			r.metrics.CacheLookup(port.CacheHit)
-			return entry.Result, nil
+			return entry.Results, nil
 		}
 		r.metrics.CacheLookup(port.CacheStale)
 	} else {
 		r.metrics.CacheLookup(port.CacheMiss)
 	}
 
-	result, err := callProviders(ctx, r, func(g port.Geocoder) (domain.Result, bool, error) {
-		result, err := g.Reverse(ctx, q)
-		return result, result.Found, err
-	})
-	if err != nil {
-		return domain.Result{}, err
-	}
-
-	r.cache.Set(key, port.Entry{Result: result, StoredAt: r.now()})
-	return result, nil
-}
-
-// Forward resolves places matching free text. Cached by normalised query
-// text; there is no distance rule because forward answers carry no single
-// coordinate to measure against.
-func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.Result, error) {
-	key := "f:" + strings.ToLower(strings.TrimSpace(q.Text))
-
-	if entry, ok := r.cache.Get(key); ok {
-		r.metrics.CacheLookup(port.CacheHit)
-		return entry.Results, nil
-	}
-	r.metrics.CacheLookup(port.CacheMiss)
-
 	results, err := callProviders(ctx, r, func(g port.Geocoder) ([]domain.Result, bool, error) {
-		results, err := g.Forward(ctx, q)
-		return results, true, err
+		results, err := g.Reverse(ctx, q)
+		return results, len(results) > 0, err
 	})
 	if err != nil {
 		return nil, err
@@ -132,22 +123,61 @@ func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return results, nil
 }
 
+// reverseKey derives the reverse cache key: the cell, plus the query options
+// that change the answer set. A Limit below 1 means the provider default,
+// so it normalises to 1 to share one entry with explicit Limit=1 callers.
+func reverseKey(q domain.ReverseQuery) string {
+	return fmt.Sprintf("r:%s:%d:%g:%t", q.Coordinates.CellKey(), max(q.Limit, 1), q.Radius, q.DistanceSort)
+}
+
+// Forward resolves places matching free text. Cached by normalised query
+// text plus the limit; there is no distance rule because forward answers
+// carry no single coordinate to measure against.
+func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.Result, error) {
+	if len(q.Text) > maxForwardTextBytes {
+		return nil, fmt.Errorf("%w: forward text exceeds %d bytes", domain.ErrInvalidQuery, maxForwardTextBytes)
+	}
+	key := forwardKey(q)
+
+	if entry, ok := r.cache.Get(key); ok {
+		r.metrics.CacheLookup(port.CacheHit)
+		return entry.Results, nil
+	}
+	r.metrics.CacheLookup(port.CacheMiss)
+
+	results, err := callProviders(ctx, r, func(g port.Geocoder) ([]domain.Result, bool, error) {
+		results, err := g.Forward(ctx, q)
+		return results, len(results) > 0, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r.cache.Set(key, port.Entry{Results: results, StoredAt: r.now()})
+	return results, nil
+}
+
+func forwardKey(q domain.ForwardQuery) string {
+	return fmt.Sprintf("f:%d:%s", max(q.Limit, 1), strings.ToLower(strings.TrimSpace(q.Text)))
+}
+
 // reusable applies the cache reuse rule: a "nothing here" answer and a
 // street-level answer are safe cell-wide; a house-numbered answer is only
-// safe near where that house actually is.
-func reusable(result domain.Result, q domain.Coordinates, maxReuse float64) bool {
-	if !result.Found || !result.Address.HasHouseNumber() {
+// safe near where that house actually is. The first result is the nearest
+// one, so it speaks for the whole answer set.
+func reusable(results []domain.Result, q domain.Coordinates, maxReuse float64) bool {
+	if len(results) == 0 || !results[0].Address.HasHouseNumber() {
 		return true
 	}
-	return q.DistanceTo(result.Coordinates) <= maxReuse
+	return q.DistanceTo(results[0].Coordinates) <= maxReuse
 }
 
 // callProviders tries each provider in order until one answers. It is the
-// home of the never-blank rule: provider errors are collected and surfaced as
-// ErrAllProvidersFailed, never converted into an empty answer. found reports
-// whether the provider answered at all (always true on success; a genuine
-// "nothing here" is still an answer). Free function rather than a method
-// because Go methods cannot be generic.
+// home of the never-blank rule: provider errors are collected and surfaced
+// as ErrAllProvidersFailed, never converted into an empty answer. found only
+// drives the success-vs-empty metric outcome; an empty answer is still an
+// answer. Free function rather than a method because Go methods cannot be
+// generic.
 func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geocoder) (T, bool, error)) (T, error) {
 	var zero T
 	if len(r.providers) == 0 {
@@ -156,6 +186,12 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geoco
 
 	var errs []error
 	for _, p := range r.providers {
+		// A caller whose own context has ended is never a provider failure,
+		// and must not spend quota on the remaining providers.
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
+
 		name := p.Geocoder.Name()
 
 		if p.quota != nil && p.quota.remaining(r.now()) == 0 {
@@ -165,7 +201,6 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geoco
 
 		if p.Limiter != nil {
 			if err := p.Limiter.Wait(ctx); err != nil {
-				// The caller's own deadline is not a provider failure.
 				if ctx.Err() != nil {
 					return zero, ctx.Err()
 				}
@@ -183,14 +218,17 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geoco
 		start := r.now()
 		result, found, err := lookup(p.Geocoder)
 		d := r.now().Sub(start)
+		if p.quota != nil {
+			r.metrics.QuotaRemaining(name, p.quota.remaining(r.now()))
+		}
 
 		if err != nil {
+			if ctx.Err() != nil {
+				return zero, ctx.Err()
+			}
 			r.metrics.ProviderRequest(name, port.ProviderError, d)
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 			continue
-		}
-		if p.quota != nil {
-			r.metrics.QuotaRemaining(name, p.quota.remaining(r.now()))
 		}
 		if found {
 			r.metrics.ProviderRequest(name, port.ProviderSuccess, d)

@@ -1,12 +1,14 @@
 package domain
 
 import (
-	"errors"
 	"fmt"
 	"math"
 )
 
-// Coordinates is a WGS84 latitude/longitude pair.
+// Coordinates is a WGS84 latitude/longitude pair. Build it with
+// NewCoordinates: the fields are exported for the provider adapters, but
+// callers on the request path must go through the constructor so NaN and
+// out-of-range input cannot reach the cache-key and distance math.
 //
 // A location history is PII, so Coordinates deliberately has no String or
 // MarshalText helper: raw coordinates must not end up in logs or metrics by
@@ -16,13 +18,17 @@ type Coordinates struct {
 	Lon float64
 }
 
-// NewCoordinates validates the ranges and returns the pair.
+// NewCoordinates validates the ranges and returns the pair. The error names
+// the field but not the value: error text can reach logs.
 func NewCoordinates(lat, lon float64) (Coordinates, error) {
+	if math.IsNaN(lat) || math.IsNaN(lon) || math.IsInf(lat, 0) || math.IsInf(lon, 0) {
+		return Coordinates{}, fmt.Errorf("%w: non-finite value", ErrInvalidCoordinates)
+	}
 	if lat < -90 || lat > 90 {
-		return Coordinates{}, fmt.Errorf("%w: latitude %v outside [-90, 90]", ErrInvalidCoordinates, lat)
+		return Coordinates{}, fmt.Errorf("%w: latitude outside [-90, 90]", ErrInvalidCoordinates)
 	}
 	if lon < -180 || lon > 180 {
-		return Coordinates{}, fmt.Errorf("%w: longitude %v outside [-180, 180]", ErrInvalidCoordinates, lon)
+		return Coordinates{}, fmt.Errorf("%w: longitude outside [-180, 180]", ErrInvalidCoordinates)
 	}
 	return Coordinates{Lat: lat, Lon: lon}, nil
 }
@@ -38,6 +44,8 @@ func (c Coordinates) DistanceTo(other Coordinates) float64 {
 	dLon := (other.Lon - c.Lon) * deg
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
 		math.Cos(c.Lat*deg)*math.Cos(other.Lat*deg)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	// a can exceed 1 by float noise near the antipodes; sqrt(1-a) would go NaN.
+	a = min(a, 1)
 	return 2 * earthRadiusM * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
@@ -53,6 +61,3 @@ func (c Coordinates) CellKey() string {
 	lon := int64(math.Round(c.Lon / cellSizeDeg))
 	return fmt.Sprintf("%d:%d", lat, lon)
 }
-
-// ErrInvalidCoordinates guards against constructing invalid pairs by hand.
-var ErrInvalidCoordinates = errors.New("invalid coordinates")

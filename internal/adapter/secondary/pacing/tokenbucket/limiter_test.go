@@ -9,6 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewPanicsOnNonPositiveRate(t *testing.T) {
+	must := require.New(t)
+	// rps <= 0 would block every Wait forever; that is a config error and
+	// must fail at startup, not under load.
+	must.Panics(func() { New(0) })
+	must.Panics(func() { New(-1) })
+}
+
 func TestWait(t *testing.T) {
 	t.Run("admits immediately at a high rate", func(t *testing.T) {
 		must := require.New(t)
