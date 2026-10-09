@@ -1,0 +1,16 @@
+.git
+.github
+.omo
+.worktrees
+tmp
+
+# Local secrets and build outputs never belong in the build context.
+.env
+coverage.out
+/geocoder-proxy
+
+# Docs and build config changes must not invalidate the compiled layer.
+*.md
+LICENSE
+Dockerfile
+.dockerignore

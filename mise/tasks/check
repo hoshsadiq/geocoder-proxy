@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Run all checks (prek hooks) across the repo"
+set -euo pipefail
+exec prek run --all-files

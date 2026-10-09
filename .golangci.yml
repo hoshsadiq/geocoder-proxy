@@ -1,0 +1,49 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - depguard
+    - errorlint
+    - misspell
+    - modernize
+    - nilerr
+    - noctx
+    - nolintlint
+    - testifylint
+    - unconvert
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        core-purity:
+          files:
+            - "**/internal/core/**"
+          allow:
+            - $gostd
+            - github.com/hoshsadiq/geocoder-proxy/internal/core
+          deny:
+            - pkg: net/http
+              desc: core must stay transport-agnostic; HTTP lives in primary adapters
+            - pkg: github.com/hoshsadiq/geocoder-proxy/internal/adapter
+              desc: core must depend on ports, never on adapters; imports point inward
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hoshsadiq/geocoder-proxy

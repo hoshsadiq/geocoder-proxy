@@ -1,0 +1,26 @@
+name: renovate-validate
+
+on:
+  pull_request:
+    paths:
+      - renovate.json
+      - .github/workflows/renovate-validate.yml
+  workflow_dispatch:
+
+concurrency:
+  group: renovate-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate renovate.json
+        # npx instead of a mise tool: npm:renovate fails mise's npm trust
+        # policy (see mise.toml), and the runner's node is enough for this.
+        run: npx --yes --package renovate@44.115.10 -- renovate-config-validator --strict renovate.json

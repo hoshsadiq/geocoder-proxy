@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Cross-compile the binary for space-separated GOOS/GOARCH targets"
+set -euo pipefail
+# Word splitting is the point: the argument is one space-separated target list.
+# shellcheck disable=SC2086
+for target in ${1:?usage: build-cross "linux/amd64 linux/arm64"}; do
+  os="${target%/*}"
+  arch="${target#*/}"
+  echo "building $os/$arch"
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -o "tmp/geocoder-proxy-$os-$arch" ./cmd/geocoder-proxy
+done

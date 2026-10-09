@@ -1,0 +1,10 @@
+{
+  // markdownlint-cli2 config: https://github.com/DavidAnson/markdownlint-cli2
+  "config": {
+    // Long prose lines and inline HTML are fine in this repo's docs.
+    "MD013": false,
+    "MD033": false,
+    // Allow the same heading text under different parents.
+    "MD024": { "siblings_only": true }
+  }
+}

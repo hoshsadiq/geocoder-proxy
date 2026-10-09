@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies", "renovate"],
+  "rangeStrategy": "pin",
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "matchDepTypes": ["require"],
+      "enabled": true,
+      "groupName": "go security patches",
+      "groupSlug": "gomod-security",
+      "matchPackageNames": ["/^golang\\.org\\/x\\//", "/^google\\.golang\\.org\\//"],
+      "schedule": ["at any time"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["require"],
+      "groupName": "go direct dependencies",
+      "groupSlug": "gomod-direct"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "groupName": "go indirect dependencies",
+      "groupSlug": "gomod-indirect"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions (all)",
+      "groupSlug": "gha",
+      "pinDigests": true
+    },
+    {
+      "matchManagers": ["mise"],
+      "groupName": "mise tools",
+      "groupSlug": "mise"
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "groupName": "docker images"
+    }
+  ]
+}

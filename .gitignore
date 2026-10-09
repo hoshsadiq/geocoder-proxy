@@ -1,0 +1,24 @@
+# Go
+tmp/
+coverage.out
+*.test
+*.prof
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp
+
+# Env and local config
+.env
+
+# Agent working dirs
+.omo/
+.worktrees/
+
+# The operator's global gitignore excludes AGENTS.md everywhere; this repo
+# tracks its own, so re-include it.
+!/AGENTS.md
+
+# Bare `go build` output
+/geocoder-proxy
