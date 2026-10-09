@@ -23,4 +23,4 @@ jobs:
       - name: Validate renovate.json
         # npx instead of a mise tool: npm:renovate fails mise's npm trust
         # policy (see mise.toml), and the runner's node is enough for this.
-        run: npx --yes --package renovate@44.115.10 -- renovate-config-validator renovate.json
+        run: npx --yes --package renovate@44.115.10 -- renovate-config-validator --strict renovate.json

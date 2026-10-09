@@ -27,8 +27,8 @@ geocoding core is being built next.
 - **Observable.** Prometheus metrics for cache hit rate, per-provider
   latency, errors and remaining quota.
 
-Providers wired in: ChibiGeo/Photon/Komoot, Geoapify, LocationIQ, Nominatim.
-Adding another is one package that registers itself.
+Providers planned for v1: ChibiGeo/Photon/Komoot, Geoapify, LocationIQ,
+Nominatim. Adding another will be one package that registers itself.
 
 ## Getting started
 
