@@ -26,10 +26,9 @@ type Geocoder interface {
 	// Name identifies the provider in config, logs and metric labels.
 	Name() string
 
-	// Reverse resolves the places nearest to the query point, in the order
-	// the caller should see them (the first result drives the cache reuse
-	// distance check). Honour Limit, Radius and DistanceSort where the
-	// provider supports them.
+	// Reverse resolves the places nearest to the query point, nearest first
+	// (the first result drives the cache reuse distance check). Honour Limit,
+	// Radius and DistanceSort where the provider supports them.
 	Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.Result, error)
 
 	// Forward resolves places matching free text.

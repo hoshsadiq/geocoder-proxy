@@ -6,8 +6,9 @@ package domain
 // dropping them collapses that flow to one feature. A Limit of zero means
 // the provider's default.
 type ReverseQuery struct {
-	Coordinates  Coordinates
-	Limit        int
+	Coordinates Coordinates
+	Limit       int
+	// Radius is in kilometres, matching Photon.
 	Radius       float64
 	DistanceSort bool
 }

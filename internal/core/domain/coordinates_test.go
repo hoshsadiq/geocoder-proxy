@@ -64,7 +64,7 @@ func TestDistanceTo(t *testing.T) {
 
 	// Near-antipodal pairs push the haversine's a past 1 through float noise;
 	// the clamp keeps the result finite instead of NaN.
-	antipodal := london.DistanceTo(Coordinates{Lat: -88.5, Lon: 1})
+	antipodal := london.DistanceTo(Coordinates{Lat: -51.5074, Lon: 179.8722})
 	is.False(math.IsNaN(antipodal))
 	is.Greater(antipodal, 0.0)
 }

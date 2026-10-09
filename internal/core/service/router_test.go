@@ -248,6 +248,9 @@ func TestReverseMultiResultRoundTrip(t *testing.T) {
 func TestReverseKeySeparatesOptions(t *testing.T) {
 	is := assert.New(t)
 	base := query(cellNear)
+	// The exact format is pinned so a key-format change cannot slip past the
+	// option-separation checks below.
+	is.Equal("r:"+cellNear.CellKey()+":1:0:false", reverseKey(base))
 	is.NotEqual(reverseKey(base), reverseKey(domain.ReverseQuery{Coordinates: cellNear, Limit: 10, Radius: 1, DistanceSort: true}))
 	// Limit 0 is the provider default and shares a key with explicit Limit 1.
 	is.Equal(reverseKey(base), reverseKey(domain.ReverseQuery{Coordinates: cellNear, Limit: 1}))

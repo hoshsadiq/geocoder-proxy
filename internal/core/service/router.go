@@ -158,7 +158,10 @@ func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 }
 
 func forwardKey(q domain.ForwardQuery) string {
-	return fmt.Sprintf("f:%d:%s", max(q.Limit, 1), strings.ToLower(strings.TrimSpace(q.Text)))
+	// No normalisation here, unlike reverseKey: Photon's forward default is
+	// 15 results, so Limit 0 (provider default) and Limit 1 are different
+	// answers and must not share an entry.
+	return fmt.Sprintf("f:%d:%s", q.Limit, strings.ToLower(strings.TrimSpace(q.Text)))
 }
 
 // reusable applies the cache reuse rule: a "nothing here" answer and a
