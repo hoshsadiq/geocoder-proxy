@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Remove build and coverage artifacts"
+set -euo pipefail
+rm -rf tmp/ coverage.out

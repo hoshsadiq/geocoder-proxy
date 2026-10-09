@@ -1,0 +1,20 @@
+# Go
+tmp/
+coverage.out
+*.test
+*.prof
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp
+
+# Env and local config
+.env
+
+# Agent working dirs
+.omo/
+.worktrees/
+
+# Bare `go build` output
+/geocoder-proxy

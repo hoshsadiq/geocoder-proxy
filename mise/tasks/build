@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Build the Go binary into tmp/"
+set -euo pipefail
+exec go build -o ./tmp/geocoder-proxy ./cmd/geocoder-proxy

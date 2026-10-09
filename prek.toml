@@ -1,0 +1,99 @@
+# Git hooks for geocoder-proxy, run by prek (https://prek.j178.dev).
+#
+# Install the shims with `mise run hooks-install`; run every hook across the
+# repo with `mise run check`.
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-json" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-illegal-windows-names" },
+  { id = "check-symlinks" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-shebang-scripts-are-executable" },
+  { id = "no-commit-to-branch", args = ["--branch", "main"] },
+  { id = "detect-private-key" },
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "mixed-line-ending", args = ["--fix=lf"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "gofumpt",
+    name = "gofumpt",
+    language = "system",
+    entry = "mise x -- gofumpt -w",
+    types = ["go"],
+  },
+  {
+    id = "goimports",
+    name = "goimports",
+    language = "system",
+    entry = "mise x -- goimports -w -local github.com/hoshsadiq/geocoder-proxy",
+    types = ["go"],
+  },
+  {
+    id = "go-vet",
+    name = "go vet",
+    language = "system",
+    entry = "mise x -- go vet ./...",
+    types = ["go"],
+    pass_filenames = false,
+  },
+  {
+    id = "golangci-lint",
+    name = "golangci-lint",
+    language = "system",
+    entry = "mise x -- golangci-lint run",
+    types = ["go"],
+    pass_filenames = false,
+  },
+  {
+    id = "actionlint",
+    name = "actionlint",
+    language = "system",
+    entry = "mise x -- actionlint",
+    files = "^\\.github/workflows/.*\\.ya?ml$",
+  },
+  {
+    id = "gitleaks",
+    name = "gitleaks",
+    language = "system",
+    # Scans the working tree, so it covers both a staged pre-commit run and
+    # `prek run --all-files`.
+    entry = "mise x -- gitleaks dir --redact --verbose --no-banner .",
+    pass_filenames = false,
+    always_run = true,
+  },
+  {
+    id = "markdownlint",
+    name = "markdownlint-cli2",
+    language = "system",
+    entry = "mise x -- markdownlint-cli2 --fix",
+    files = "\\.md$",
+  },
+  {
+    id = "govulncheck",
+    name = "govulncheck",
+    language = "system",
+    entry = "mise run govulncheck",
+    types = ["go"],
+    pass_filenames = false,
+  },
+  {
+    id = "go-mod-tidy",
+    name = "go mod tidy",
+    language = "system",
+    entry = "bash -c 'go mod tidy && git diff --exit-code -- go.mod go.sum'",
+    always_run = true,
+    pass_filenames = false,
+  },
+]

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Run govulncheck"
+set -euo pipefail
+exec govulncheck ./...

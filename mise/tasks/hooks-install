@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Register git hooks via prek"
+set -euo pipefail
+exec prek install --install-hooks

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run the full local CI gate (tidy check, build, test, vuln, hooks)"
+set -euo pipefail
+go mod tidy
+git diff --exit-code -- go.mod go.sum
+go build ./...
+go test -race -shuffle=on ./...
+govulncheck ./...
+exec prek run --all-files
