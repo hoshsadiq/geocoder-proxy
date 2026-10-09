@@ -19,7 +19,7 @@
       "enabled": true,
       "groupName": "go security patches",
       "groupSlug": "gomod-security",
-      "matchPackagePrefixes": ["golang.org/x/", "google.golang.org/"],
+      "matchPackageNames": ["/^golang\\.org\\/x\\//", "/^google\\.golang\\.org\\//"],
       "schedule": ["at any time"],
       "automerge": true
     },

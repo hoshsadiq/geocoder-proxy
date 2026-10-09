@@ -51,11 +51,6 @@ jobs:
             go-${{ runner.os }}-
 
       - name: Cross build (${{ matrix.targets }})
-        # CGO is off, so a plain go build cross-compiles without a C toolchain.
-        run: |
-          for target in ${{ matrix.targets }}; do
-            os="${target%/*}"
-            arch="${target#*/}"
-            echo "building $os/$arch"
-            GOOS=$os GOARCH=$arch go build -o "tmp/geocoder-proxy-$os-$arch" ./cmd/geocoder-proxy
-          done
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: mise run build-cross "$TARGETS"

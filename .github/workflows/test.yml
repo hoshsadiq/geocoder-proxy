@@ -101,4 +101,13 @@ jobs:
             prek-${{ runner.os }}-
 
       - name: Run prek hooks
+        # no-commit-to-branch guards local commits; on a push to main HEAD is
+        # on main by definition, so the hook would fail its own gate.
+        env:
+          SKIP: no-commit-to-branch
         run: prek run --all-files
+
+      - name: gitleaks history scan
+        # The prek hook scans the working tree only; a secret committed and
+        # later removed would go undetected without a history scan.
+        run: mise x -- gitleaks git --redact --no-banner --log-opts="--all" .

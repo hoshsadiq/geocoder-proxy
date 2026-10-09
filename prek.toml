@@ -64,6 +64,20 @@ hooks = [
     files = "^\\.github/workflows/.*\\.ya?ml$",
   },
   {
+    id = "shellcheck",
+    name = "shellcheck",
+    language = "system",
+    entry = "mise x -- shellcheck --severity=warning --external-sources",
+    types = ["shell"],
+  },
+  {
+    id = "shfmt",
+    name = "shfmt",
+    language = "system",
+    entry = "mise x -- shfmt -w -i 2 -ci",
+    types = ["shell"],
+  },
+  {
     id = "gitleaks",
     name = "gitleaks",
     language = "system",

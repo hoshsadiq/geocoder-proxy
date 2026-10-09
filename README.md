@@ -12,7 +12,7 @@ location point.
 **Status: early development.** The scaffold, tooling and CI are in place; the
 geocoding core is being built next.
 
-## What it does
+## What it will do
 
 - **Speaks Photon.** `GET /reverse` and `GET /api`, GeoJSON in the shape
   Dawarich already parses. No Dawarich change needed.

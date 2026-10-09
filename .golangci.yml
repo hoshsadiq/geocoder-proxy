@@ -19,11 +19,13 @@ linters:
       rules:
         core-purity:
           files:
-            - "**/internal/core/**/*.go"
+            - "**/internal/core/**"
           allow:
             - $gostd
             - github.com/hoshsadiq/geocoder-proxy/internal/core
           deny:
+            - pkg: net/http
+              desc: core must stay transport-agnostic; HTTP lives in primary adapters
             - pkg: github.com/hoshsadiq/geocoder-proxy/internal/adapter
               desc: core must depend on ports, never on adapters; imports point inward
     nolintlint:
