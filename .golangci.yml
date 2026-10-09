@@ -20,6 +20,8 @@ linters:
         core-purity:
           files:
             - "**/internal/core/**"
+            # Tests may import testify and friends; purity rules apply to shipped code.
+            - "!**/*_test.go"
           allow:
             - $gostd
             - github.com/hoshsadiq/geocoder-proxy/internal/core
