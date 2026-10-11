@@ -24,7 +24,8 @@ type Provider struct {
 	Geocoder port.Geocoder
 	// Limiter paces calls; nil means unpaced.
 	Limiter port.Limiter
-	// DailyQuota caps calls per UTC day; zero means unlimited.
+	// DailyQuota caps calls over a rolling 24-hour window; zero means
+	// unlimited.
 	DailyQuota int
 }
 
