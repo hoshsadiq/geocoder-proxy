@@ -83,6 +83,67 @@ func TestForwardParsesNominatimResponse(t *testing.T) {
 	is.Equal("CA", got[0].Address.CountryCode)
 }
 
+func TestNoMatchErrorBodyIsGenuineEmpty(t *testing.T) {
+	must := require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"Unable to geocode","place_id":0}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 0, -30),
+	})
+	must.NoError(err)
+	must.Empty(got, "Nominatim's documented no-match marker is a genuine nothing-here")
+}
+
+func TestOtherErrorBodyIsAnError(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"Bandwidth limit exceeded"}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 0, -30),
+	})
+	must.Error(err, "an error body that is not the no-match marker is a failure, never a cacheable empty")
+	is.Nil(got)
+}
+
+func TestAPIKeySentWhenConfigured(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := serve(t, "testdata/reverse.json", func(r *http.Request) {
+		is.Equal("hosted-key", r.URL.Query().Get("key"))
+	})
+	defer srv.Close()
+
+	c, err := New(registry.Config{BaseURL: srv.URL, UserAgent: "ua", APIKey: "hosted-key"})
+	must.NoError(err)
+	_, err = c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+}
+
+func TestOsmKeyValueAndCountyFallback(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"osm_id":11550063,"osm_type":"way","lat":"51.4776748","lon":"-0.0610621",
+			"category":"highway","type":"residential","addresstype":"road","name":"Studholme Street",
+			"address":{"road":"Studholme Street","city":"London","state_district":"Greater London",
+			"country":"United Kingdom","country_code":"gb"}}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 51.4774, -0.061),
+	})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal("highway", got[0].Address.OsmKey, "Nominatim's category maps to OsmKey")
+	is.Equal("residential", got[0].Address.OsmValue, "Nominatim's type maps to OsmValue")
+	is.Equal("Greater London", got[0].Address.County, "state_district fills County when county is absent")
+}
+
 func TestUserAgentRequired(t *testing.T) {
 	must := require.New(t)
 	_, err := New(registry.Config{})

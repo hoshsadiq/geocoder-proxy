@@ -8,10 +8,10 @@ package photon
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/httpfetch"
@@ -58,9 +58,9 @@ func WithHTTPClient(c *http.Client) Option {
 func New(cfg registry.Config, opts ...Option) (*Client, error) {
 	c := &Client{
 		name:   providerName,
-		base:   cfg.BaseURL,
+		base:   strings.TrimSuffix(cfg.BaseURL, "/"),
 		apiKey: cfg.APIKey,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		http:   httpfetch.NewClient(10 * time.Second),
 	}
 	if c.base == "" {
 		c.base = defaultBaseURL
@@ -107,12 +107,15 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 		headers["X-Api-Key"] = c.apiKey
 	}
 	var fc featureCollection
+	// The router prefixes provider errors with the provider name.
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc); err != nil {
-		return nil, fmt.Errorf("%s: %w", c.name, err)
+		return nil, err
 	}
 	results := make([]domain.Result, 0, len(fc.Features))
 	for _, f := range fc.Features {
-		results = append(results, f.toResult())
+		if r, ok := f.toResult(); ok {
+			results = append(results, r)
+		}
 	}
 	return results, nil
 }
@@ -148,7 +151,17 @@ type properties struct {
 	CountryCode string `json:"countrycode"`
 }
 
-func (f feature) toResult() domain.Result {
+func (f feature) toResult() (domain.Result, bool) {
+	if len(f.Geometry.Coordinates) != 2 {
+		return domain.Result{}, false
+	}
+	// Provider coordinates are trusted, but a garbage pair must not poison
+	// the cache cell: a feature without valid coordinates is dropped.
+	coords, err := domain.NewCoordinates(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0])
+	if err != nil {
+		return domain.Result{}, false
+	}
+
 	r := domain.Result{Address: domain.Address{
 		Name:        f.Properties.Name,
 		Type:        f.Properties.Type,
@@ -161,35 +174,11 @@ func (f feature) toResult() domain.Result {
 		County:      f.Properties.County,
 		State:       f.Properties.State,
 		Country:     f.Properties.Country,
-		CountryCode: f.Properties.CountryCode,
+		CountryCode: strings.ToUpper(f.Properties.CountryCode),
 		OsmID:       f.Properties.OsmID,
-		OsmType:     canonicalOsmType(f.Properties.OsmType),
+		OsmType:     domain.CanonicalOsmType(f.Properties.OsmType),
 		OsmKey:      f.Properties.OsmKey,
 		OsmValue:    f.Properties.OsmValue,
-	}}
-	if len(f.Geometry.Coordinates) == 2 {
-		// Provider coordinates are trusted, but a garbage pair must not
-		// poison the cache cell: drop the result instead.
-		if c, err := domain.NewCoordinates(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0]); err == nil {
-			r.Coordinates = c
-		}
-	}
-	return r
-}
-
-// canonicalOsmType normalises to the single-letter form (N, W, R) the
-// domain and the Photon wire contract use. Photon-shaped upstreams already
-// return letters; the normalisation matters for word-form providers and is
-// a pass-through here.
-func canonicalOsmType(raw string) string {
-	switch raw {
-	case "node", "N":
-		return "N"
-	case "way", "W":
-		return "W"
-	case "relation", "R":
-		return "R"
-	default:
-		return ""
-	}
+	}, Coordinates: coords}
+	return r, true
 }

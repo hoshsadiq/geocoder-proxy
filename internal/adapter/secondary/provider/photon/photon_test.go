@@ -86,17 +86,6 @@ func TestForwardParsesPhotonResponse(t *testing.T) {
 	is.Equal("N", got[0].Address.OsmType)
 }
 
-func TestCanonicalOsmType(t *testing.T) {
-	is := assert.New(t)
-	for raw, want := range map[string]string{
-		"node": "N", "way": "W", "relation": "R",
-		"N": "N", "W": "W", "R": "R",
-		"": "", "bogus": "",
-	} {
-		is.Equal(want, canonicalOsmType(raw), "raw=%q", raw)
-	}
-}
-
 func TestAPIKeyHeaderSent(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := serve(t, "testdata/forward.json", func(r *http.Request) {
@@ -135,6 +124,25 @@ func TestEmptyFeatureCollectionIsGenuineEmpty(t *testing.T) {
 	got, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
 	must.NoError(err)
 	must.Empty(got)
+}
+
+func TestFeaturesWithInvalidCoordinatesAreDropped(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[
+			{"type":"Feature","properties":{"name":"Bad Coords"},"geometry":{"type":"Point","coordinates":[999,999]}},
+			{"type":"Feature","properties":{"name":"No Geometry"}},
+			{"type":"Feature","properties":{"name":"Good","countrycode":"gb"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	got, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal("Good", got[0].Address.Name)
+	is.Equal("GB", got[0].Address.CountryCode, "countrycode is normalised to uppercase")
 }
 
 func mustCoords(t *testing.T, lat, lon float64) domain.Coordinates {

@@ -9,8 +9,9 @@ Photon-compatible API. Built for [Dawarich](https://github.com/Freika/dawarich):
 point `PHOTON_API_HOST` at it and imports stop paying one API call per
 location point.
 
-**Status: early development.** The scaffold, tooling and CI are in place; the
-geocoding core is being built next.
+**Status: early development.** The core (domain, ports, router with
+cache/pacing/quota/failover) and the four provider adapters are in place.
+Next: config wiring and the Photon-compatible HTTP surface.
 
 ## What it will do
 

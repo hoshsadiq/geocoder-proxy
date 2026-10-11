@@ -1,23 +1,23 @@
 {
-  "place_id": 116136978,
+  "place_id": "60310287",
   "licence": "https://locationiq.com/attribution",
-  "osm_type": "way",
-  "osm_id": 34633854,
-  "lat": "40.74844205",
-  "lon": "-73.98565890160751",
-  "display_name": "Empire State Building, 350, 5th Avenue, Manhattan Community Board 5, New York County, New York, 10001, United States",
+  "osm_type": "node",
+  "osm_id": "5568763423",
+  "lat": "51.5233879",
+  "lon": "-0.1582276",
+  "display_name": "Sherlock Holmes Museum, 221B, Baker Street, Marylebone, Westminster, Greater London, England, NW1 6XE, United Kingdom",
   "address": {
-    "name": "Empire State Building",
-    "house_number": "350",
-    "road": "5th Avenue",
-    "suburb": "Manhattan Community Board 5",
-    "city": "New York",
-    "county": "New York County",
-    "state": "New York",
-    "postcode": "10001",
-    "country": "United States",
-    "country_code": "us"
+    "museum": "Sherlock Holmes Museum",
+    "house_number": "221B",
+    "road": "Baker Street",
+    "suburb": "Marylebone",
+    "city": "London",
+    "state_district": "Greater London",
+    "state": "England",
+    "postcode": "NW1 6XE",
+    "country": "United Kingdom",
+    "country_code": "gb"
   },
-  "addresstype": "building",
-  "name": "Empire State Building"
+  "addresstype": "museum",
+  "name": "Sherlock Holmes Museum"
 }

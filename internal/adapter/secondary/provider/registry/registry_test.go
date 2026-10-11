@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,29 +27,39 @@ func (s stubGeocoder) Forward(context.Context, domain.ForwardQuery) ([]domain.Re
 
 var _ port.Geocoder = stubGeocoder{}
 
+var testNameCounter atomic.Int64
+
+// uniqueName gives each test its own registration slot: the registry is a
+// process-global map, so reusing a fixed name breaks `-count=2` runs.
+func uniqueName(base string) string {
+	return fmt.Sprintf("%s-%d", base, testNameCounter.Add(1))
+}
+
 func TestRegisterAndLookup(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
-	factory := func(Config) (port.Geocoder, error) { return stubGeocoder{"stub"}, nil }
+	name := uniqueName("stub")
+	factory := func(Config) (port.Geocoder, error) { return stubGeocoder{name}, nil }
 
-	Register("stub", factory)
-	f, ok := Lookup("stub")
+	Register(name, factory)
+	f, ok := Lookup(name)
 	must.True(ok)
 	g, err := f(Config{})
 	must.NoError(err)
-	is.Equal("stub", g.Name())
+	is.Equal(name, g.Name())
 
 	_, ok = Lookup("missing")
 	is.False(ok)
-	is.Contains(Names(), "stub")
+	is.Contains(Names(), name)
 }
 
 func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	require.Panics(t, func() {
-		Register("dup", func(Config) (port.Geocoder, error) { return stubGeocoder{"a"}, nil })
-		Register("dup", func(Config) (port.Geocoder, error) { return stubGeocoder{"b"}, nil })
+		name := uniqueName("dup")
+		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"a"}, nil })
+		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"b"}, nil })
 	})
 }
 
 func TestRegisterPanicsOnNil(t *testing.T) {
-	require.Panics(t, func() { Register("nilfactory", nil) })
+	require.Panics(t, func() { Register(uniqueName("nilfactory"), nil) })
 }

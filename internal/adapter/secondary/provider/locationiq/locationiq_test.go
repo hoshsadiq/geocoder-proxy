@@ -13,9 +13,9 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
-// The fixtures follow LocationIQ's documented example response (their
-// OpenAPI spec, Empire State Building): the shape is Nominatim-compatible,
-// with lat/lon as strings and a lowercase country code.
+// The fixtures follow LocationIQ's documented example responses (their
+// docs/OpenAPI examples), including the quoted numeric fields LocationIQ
+// actually sends: "osm_id": "5568763423", not an unquoted number.
 func serve(t *testing.T, fixture string, handlerCheck func(*http.Request)) *httptest.Server {
 	t.Helper()
 	body, err := os.ReadFile(fixture)
@@ -46,26 +46,26 @@ func TestReverseParsesLocationIQResponse(t *testing.T) {
 	defer srv.Close()
 
 	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
-		Coordinates: mustCoords(t, 40.7484, -73.9856),
+		Coordinates: mustCoords(t, 51.5234, -0.1582),
 	})
 	must.NoError(err)
 	must.Len(got, 1)
 
 	a := got[0].Address
-	is.Equal("Empire State Building", a.Name)
-	is.Equal("building", a.Type)
-	is.Equal("350", a.HouseNumber)
-	is.Equal("5th Avenue", a.Street)
-	is.Equal("10001", a.Postcode)
-	is.Equal("New York", a.City)
-	is.Equal("Manhattan Community Board 5", a.District)
-	is.Equal("New York County", a.County)
-	is.Equal("New York", a.State)
-	is.Equal("United States", a.Country)
-	is.Equal("US", a.CountryCode, "lowercase country codes are normalised to uppercase")
-	is.Equal("W", a.OsmType, "word-form osm types are normalised to letters")
-	is.Equal(int64(34633854), a.OsmID)
-	is.InDelta(40.74844205, got[0].Coordinates.Lat(), 0.00001)
+	is.Equal("Sherlock Holmes Museum", a.Name)
+	is.Equal("museum", a.Type)
+	is.Equal("221B", a.HouseNumber)
+	is.Equal("Baker Street", a.Street)
+	is.Equal("NW1 6XE", a.Postcode)
+	is.Equal("London", a.City)
+	is.Equal("Marylebone", a.District)
+	is.Equal("Greater London", a.County, "state_district fills County when county is absent")
+	is.Equal("England", a.State)
+	is.Equal("United Kingdom", a.Country)
+	is.Equal("GB", a.CountryCode, "lowercase country codes are normalised to uppercase")
+	is.Equal("N", a.OsmType, "word-form osm types are normalised to letters")
+	is.Equal(int64(5568763423), a.OsmID, "LocationIQ sends osm_id as a JSON string")
+	is.InDelta(51.5233879, got[0].Coordinates.Lat(), 0.00001)
 }
 
 func TestForwardParsesLocationIQResponse(t *testing.T) {
@@ -74,6 +74,7 @@ func TestForwardParsesLocationIQResponse(t *testing.T) {
 		is.Equal("/v1/search", r.URL.Path)
 		is.Equal("empire state building", r.URL.Query().Get("q"))
 		is.Equal("2", r.URL.Query().Get("limit"))
+		is.Equal("1", r.URL.Query().Get("addressdetails"), "without it the search endpoint returns no address object")
 	})
 	defer srv.Close()
 
@@ -83,7 +84,40 @@ func TestForwardParsesLocationIQResponse(t *testing.T) {
 	})
 	must.NoError(err)
 	must.Len(got, 1)
-	is.Equal("Empire State Building", got[0].Address.Name)
+	a := got[0].Address
+	is.Equal("Empire State Building", a.Name)
+	is.Equal("tourism", a.OsmKey, "LocationIQ's class maps to OsmKey")
+	is.Equal("attraction", a.OsmValue, "LocationIQ's type maps to OsmValue")
+	is.Equal("Manhattan Community Board 5", a.District)
+}
+
+func TestNoMatchErrorBodyIsGenuineEmpty(t *testing.T) {
+	must := require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"Unable to geocode"}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 0, -30),
+	})
+	must.NoError(err)
+	must.Empty(got, "the documented no-match marker is a genuine nothing-here")
+}
+
+func TestOtherErrorBodyIsAnError(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"Rate Limited Day"}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 0, -30),
+	})
+	must.Error(err, "an error body that is not the no-match marker is a failure, never a cacheable empty")
+	is.Nil(got)
+	is.NotContains(err.Error(), "0,-30")
 }
 
 func TestAPIKeyRequired(t *testing.T) {

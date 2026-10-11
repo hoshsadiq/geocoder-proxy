@@ -1,7 +1,8 @@
 // Package geoapify is the provider adapter for Geoapify's Geocoding API.
-// The response is Geoapify's own `results` array (not GeoJSON), mapped into
-// the domain here. Geoapify does not return OSM identifiers in geocoding
-// results, so those domain fields stay empty.
+// The response is Geoapify's own `results` array (requested with
+// format=json; their default is GeoJSON), mapped into the domain here.
+// Geoapify does not return OSM identifiers in geocoding results, so those
+// domain fields stay empty.
 package geoapify
 
 import (
@@ -24,7 +25,6 @@ const (
 	providerName   = "geoapify"
 )
 
-// Compile-time guard.
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
@@ -59,9 +59,9 @@ func New(cfg registry.Config, opts ...Option) (*Client, error) {
 	}
 	c := &Client{
 		name:   providerName,
-		base:   cfg.BaseURL,
+		base:   strings.TrimSuffix(cfg.BaseURL, "/"),
 		apiKey: cfg.APIKey,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		http:   httpfetch.NewClient(10 * time.Second),
 	}
 	if c.base == "" {
 		c.base = defaultBaseURL
@@ -72,7 +72,6 @@ func New(cfg registry.Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Name identifies the provider in config, logs and metric labels.
 func (c *Client) Name() string { return c.name }
 
 // Reverse resolves the places nearest to the query point.
@@ -98,47 +97,60 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
 	v.Set("apiKey", c.apiKey)
+	// format=json is explicit: the API's default is GeoJSON, which would
+	// decode to an empty results array and read as a genuine "nothing here".
+	v.Set("format", "json")
 	var body response
+	// The router prefixes provider errors with the provider name.
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, &body); err != nil {
-		return nil, fmt.Errorf("%s: %w", c.name, err)
+		return nil, err
+	}
+	if body.Error != "" {
+		return nil, fmt.Errorf("upstream returned an error response: %s", body.Error)
 	}
 	results := make([]domain.Result, 0, len(body.Results))
 	for _, r := range body.Results {
-		result, err := r.toResult()
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.name, err)
+		if result, ok := r.toResult(); ok {
+			results = append(results, result)
 		}
-		results = append(results, result)
 	}
 	return results, nil
 }
 
-// response is the Geoapify Geocoding API wire shape: a flat results array.
+// response is the Geoapify Geocoding API wire shape (format=json): a flat
+// results array, or an error object on failure.
 type response struct {
 	Results []entry `json:"results"`
+	Error   string  `json:"error"`
 }
 
 type entry struct {
-	Name        string  `json:"name"`
-	HouseNumber string  `json:"housenumber"`
-	Street      string  `json:"street"`
-	Suburb      string  `json:"suburb"`
-	District    string  `json:"district"`
-	City        string  `json:"city"`
-	County      string  `json:"county"`
-	State       string  `json:"state"`
-	Postcode    string  `json:"postcode"`
-	Country     string  `json:"country"`
-	CountryCode string  `json:"country_code"`
-	Lat         float64 `json:"lat"`
-	Lon         float64 `json:"lon"`
-	ResultType  string  `json:"result_type"`
+	Name        string   `json:"name"`
+	HouseNumber string   `json:"housenumber"`
+	Street      string   `json:"street"`
+	Suburb      string   `json:"suburb"`
+	District    string   `json:"district"`
+	City        string   `json:"city"`
+	County      string   `json:"county"`
+	State       string   `json:"state"`
+	Postcode    string   `json:"postcode"`
+	Country     string   `json:"country"`
+	CountryCode string   `json:"country_code"`
+	Lat         *float64 `json:"lat"`
+	Lon         *float64 `json:"lon"`
+	ResultType  string   `json:"result_type"`
 }
 
-func (e entry) toResult() (domain.Result, error) {
-	coords, err := domain.NewCoordinates(e.Lat, e.Lon)
+// toResult maps one entry. An entry without usable coordinates is dropped:
+// (0,0) is a real place in the Gulf of Guinea, so a missing coordinate must
+// not become one.
+func (e entry) toResult() (domain.Result, bool) {
+	if e.Lat == nil || e.Lon == nil {
+		return domain.Result{}, false
+	}
+	coords, err := domain.NewCoordinates(*e.Lat, *e.Lon)
 	if err != nil {
-		return domain.Result{}, fmt.Errorf("out-of-range coordinates in response: %w", err)
+		return domain.Result{}, false
 	}
 	return domain.Result{
 		Coordinates: coords,
@@ -155,7 +167,7 @@ func (e entry) toResult() (domain.Result, error) {
 			Country:     e.Country,
 			CountryCode: strings.ToUpper(e.CountryCode),
 		},
-	}, nil
+	}, true
 }
 
 func firstOf(values ...string) string {

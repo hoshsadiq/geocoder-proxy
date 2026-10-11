@@ -1,10 +1,13 @@
 // Package locationiq is the provider adapter for LocationIQ. The response
 // is LocationIQ's flat JSON (Nominatim-compatible shape), mapped into the
-// domain here. Auth is the key query parameter.
+// domain here. Auth is the key query parameter. LocationIQ returns numeric
+// ids as JSON strings, so osm_id decodes as json.Number.
 package locationiq
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,9 +24,10 @@ import (
 const (
 	defaultBaseURL = "https://us1.locationiq.com"
 	providerName   = "locationiq"
+	// noMatchError is LocationIQ's no-match marker in an error body.
+	noMatchError = "Unable to geocode"
 )
 
-// Compile-time guard.
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
@@ -58,9 +62,9 @@ func New(cfg registry.Config, opts ...Option) (*Client, error) {
 	}
 	c := &Client{
 		name:   providerName,
-		base:   cfg.BaseURL,
+		base:   strings.TrimSuffix(cfg.BaseURL, "/"),
 		apiKey: cfg.APIKey,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		http:   httpfetch.NewClient(10 * time.Second),
 	}
 	if c.base == "" {
 		c.base = defaultBaseURL
@@ -71,7 +75,6 @@ func New(cfg registry.Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Name identifies the provider in config, logs and metric labels.
 func (c *Client) Name() string { return c.name }
 
 // Reverse resolves the place nearest to the query point. LocationIQ returns
@@ -86,12 +89,18 @@ func (c *Client) Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.R
 	if err := c.get(ctx, "/v1/reverse", v, &place); err != nil {
 		return nil, err
 	}
+	if msg := place.errorMessage(); msg != "" {
+		if msg == noMatchError {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("upstream returned an error response: %s", msg)
+	}
 	if place.isEmpty() {
 		return nil, nil
 	}
 	result, err := place.toResult()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", c.name, err)
+		return nil, err
 	}
 	return []domain.Result{result}, nil
 }
@@ -101,6 +110,9 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	v := url.Values{}
 	v.Set("q", q.Text)
 	v.Set("format", "json")
+	// The search endpoint defaults addressdetails to 0; without it there is
+	// no address object at all.
+	v.Set("addressdetails", "1")
 	if q.Limit > 0 {
 		v.Set("limit", strconv.Itoa(q.Limit))
 	}
@@ -113,7 +125,7 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	for _, p := range places {
 		result, err := p.toResult()
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.name, err)
+			return nil, err
 		}
 		results = append(results, result)
 	}
@@ -122,57 +134,78 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 
 func (c *Client) get(ctx context.Context, path string, v url.Values, out any) error {
 	v.Set("key", c.apiKey)
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, out); err != nil {
-		return fmt.Errorf("%s: %w", c.name, err)
-	}
-	return nil
+	// The router prefixes provider errors with the provider name.
+	return httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, out)
 }
 
-// place is the LocationIQ wire shape (Nominatim-compatible). Lat/Lon arrive
-// as strings.
+// place is the LocationIQ wire shape (Nominatim-compatible). Lat, lon and
+// osm_id arrive as JSON strings.
 type place struct {
-	OsmID       int64   `json:"osm_id"`
-	OsmType     string  `json:"osm_type"`
-	Lat         string  `json:"lat"`
-	Lon         string  `json:"lon"`
-	Name        string  `json:"name"`
-	AddressType string  `json:"addresstype"`
-	Address     address `json:"address"`
+	OsmID       json.Number     `json:"osm_id"`
+	OsmType     string          `json:"osm_type"`
+	Lat         string          `json:"lat"`
+	Lon         string          `json:"lon"`
+	Name        string          `json:"name"`
+	AddressType string          `json:"addresstype"`
+	Class       string          `json:"class"`
+	Type        string          `json:"type"`
+	Error       json.RawMessage `json:"error"`
+	Address     address         `json:"address"`
 }
 
 type address struct {
-	Name        string `json:"name"`
-	HouseNumber string `json:"house_number"`
-	Road        string `json:"road"`
-	Postcode    string `json:"postcode"`
-	City        string `json:"city"`
-	Town        string `json:"town"`
-	Village     string `json:"village"`
-	Suburb      string `json:"suburb"`
-	County      string `json:"county"`
-	State       string `json:"state"`
-	Country     string `json:"country"`
-	CountryCode string `json:"country_code"`
+	Name          string `json:"name"`
+	HouseNumber   string `json:"house_number"`
+	Road          string `json:"road"`
+	Postcode      string `json:"postcode"`
+	City          string `json:"city"`
+	Town          string `json:"town"`
+	Village       string `json:"village"`
+	Suburb        string `json:"suburb"`
+	Quarter       string `json:"quarter"`
+	Neighbourhood string `json:"neighbourhood"`
+	CityDistrict  string `json:"city_district"`
+	County        string `json:"county"`
+	StateDistrict string `json:"state_district"`
+	State         string `json:"state"`
+	Country       string `json:"country"`
+	CountryCode   string `json:"country_code"`
+}
+
+// errorMessage extracts the provider's error message when the response is an
+// error object instead of a place.
+func (p place) errorMessage() string {
+	if len(p.Error) == 0 {
+		return ""
+	}
+	var msg string
+	if json.Unmarshal(p.Error, &msg) == nil {
+		return msg
+	}
+	return "unrecognised error body"
 }
 
 // isEmpty reports a no-match reverse response (an object without an osm id).
 func (p place) isEmpty() bool {
-	return p.OsmID == 0 && p.Lat == "" && p.Lon == ""
+	return p.OsmID == "" && p.Lat == "" && p.Lon == ""
 }
 
 func (p place) toResult() (domain.Result, error) {
 	lat, err := strconv.ParseFloat(p.Lat, 64)
 	if err != nil {
-		return domain.Result{}, fmt.Errorf("unparseable latitude %q in response", p.Lat)
+		return domain.Result{}, errors.New("unparseable latitude in response")
 	}
 	lon, err := strconv.ParseFloat(p.Lon, 64)
 	if err != nil {
-		return domain.Result{}, fmt.Errorf("unparseable longitude %q in response", p.Lon)
+		return domain.Result{}, errors.New("unparseable longitude in response")
 	}
 	coords, err := domain.NewCoordinates(lat, lon)
 	if err != nil {
-		return domain.Result{}, fmt.Errorf("out-of-range coordinates in response: %w", err)
+		// A broken upstream is not client input, so the request-validation
+		// sentinel must not escape here.
+		return domain.Result{}, errors.New("out-of-range coordinates in response")
 	}
+	osmID, _ := p.OsmID.Int64()
 
 	name := p.Name
 	if name == "" {
@@ -187,13 +220,16 @@ func (p place) toResult() (domain.Result, error) {
 			HouseNumber: p.Address.HouseNumber,
 			Postcode:    p.Address.Postcode,
 			City:        firstOf(p.Address.City, p.Address.Town, p.Address.Village),
-			District:    p.Address.Suburb,
-			County:      p.Address.County,
+			Locality:    firstOf(p.Address.Quarter, p.Address.Neighbourhood),
+			District:    firstOf(p.Address.CityDistrict, p.Address.Suburb),
+			County:      firstOf(p.Address.County, p.Address.StateDistrict),
 			State:       p.Address.State,
 			Country:     p.Address.Country,
 			CountryCode: strings.ToUpper(p.Address.CountryCode),
-			OsmID:       p.OsmID,
-			OsmType:     canonicalOsmType(p.OsmType),
+			OsmID:       osmID,
+			OsmType:     domain.CanonicalOsmType(p.OsmType),
+			OsmKey:      p.Class,
+			OsmValue:    p.Type,
 		},
 	}, nil
 }
@@ -205,19 +241,4 @@ func firstOf(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// canonicalOsmType maps word forms to the single-letter form (N, W, R) the
-// domain and the Photon wire contract use.
-func canonicalOsmType(raw string) string {
-	switch raw {
-	case "node":
-		return "N"
-	case "way":
-		return "W"
-	case "relation":
-		return "R"
-	default:
-		return ""
-	}
 }

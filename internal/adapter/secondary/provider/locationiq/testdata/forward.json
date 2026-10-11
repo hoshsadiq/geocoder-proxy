@@ -1,9 +1,9 @@
 [
   {
-    "place_id": 116136978,
+    "place_id": "218751965",
     "licence": "https://locationiq.com/attribution",
     "osm_type": "way",
-    "osm_id": 34633854,
+    "osm_id": "34633854",
     "boundingbox": ["40.7479255", "40.7489585", "-73.9865012", "-73.9848166"],
     "lat": "40.74844205",
     "lon": "-73.98565890160751",
