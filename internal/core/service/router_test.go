@@ -14,8 +14,6 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
 
-// --- fakes -----------------------------------------------------------------
-
 type fakeGeocoder struct {
 	name         string
 	reverseFn    func(ctx context.Context, q domain.ReverseQuery) ([]domain.Result, error)
@@ -81,9 +79,7 @@ func (m *fakeMetrics) ProviderRequest(name string, outcome port.ProviderOutcome,
 func (m *fakeMetrics) QuotaRemaining(string, int) {}
 
 type fakeLimiter struct {
-	// err is returned immediately when set.
-	err error
-	// block waits for the context to end, for the cancellation test.
+	err   error
 	block bool
 }
 
@@ -95,11 +91,8 @@ func (l fakeLimiter) Wait(ctx context.Context) error {
 	return l.err
 }
 
-// --- fixtures --------------------------------------------------------------
-
 var errBoom = errors.New("upstream exploded")
 
-// house answers with a house number; street answers street-level only.
 func house(lat, lon float64) domain.Result {
 	return domain.Result{
 		Address:     domain.Address{HouseNumber: "12", Street: "Main Street"},
@@ -114,7 +107,6 @@ func street(lat, lon float64) domain.Result {
 	}
 }
 
-// reverseGeocoder answers reverse and forward with the same fixed list.
 func reverseGeocoder(name string, results []domain.Result, err error) *fakeGeocoder {
 	return &fakeGeocoder{
 		name: name,
@@ -133,13 +125,14 @@ func newRouter(cache *fakeCache, metrics *fakeMetrics, providers ...Provider) *R
 	}))
 }
 
-// The fixtures below share one cache cell (~55 m grid at 0.0005°). cellNear
-// sits 5.7 m from the answer (inside the 25 m reuse distance); cellFar sits
-// 33.4 m away in the same cell (outside it).
+// cellNear sits 5.7 m from the answer (inside the 25 m reuse distance);
+// cellFar sits 33.4 m away in the same cell (outside it); otherCell is a
+// different cell entirely.
 var (
 	cellAnswer = coords(51.47740, -0.06100)
 	cellNear   = coords(51.47745, -0.06098)
 	cellFar    = coords(51.47770, -0.06100)
+	otherCell  = coords(51.47830, -0.06140)
 )
 
 // coords builds valid Coordinates for the fixtures; the literals are all in
@@ -164,183 +157,242 @@ func outcomesOf(m *fakeMetrics) []port.ProviderOutcome {
 	return outcomes
 }
 
-// --- reverse: cache behaviour ----------------------------------------------
-
-func TestReverseCacheHitNearAnswer(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-
-	cache.Set(reverseKey(query(cellNear)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}})
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
-
-	got, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(0, geo.reverseCalls, "a cached answer within the reuse distance must skip upstream")
-	is.Equal([]port.CacheOutcome{port.CacheHit}, metrics.cacheOutcomes)
-}
-
-func TestReverseStaleEntryCallsUpstream(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellFar.Lat(), cellFar.Lon())}, nil)
-
-	// Cached house-numbered answer sits 33.4 m from the request: too far to
-	// reuse, same cell.
-	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}})
-	cache.sets = 0
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
-
-	got, err := r.Reverse(t.Context(), query(cellFar))
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(1, geo.reverseCalls, "a cached answer past the reuse distance must not be reused")
-	is.Equal([]port.CacheOutcome{port.CacheStale}, metrics.cacheOutcomes)
-	is.Equal(1, cache.sets, "the fresh answer replaces the stale one")
-}
-
-func TestReverseStreetLevelReusedAcrossCell(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{street(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-
-	// Street-level answers carry no house number, so the reuse distance does
-	// not apply: a street name does not change inside one cell.
-	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{street(cellAnswer.Lat(), cellAnswer.Lon())}})
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
-
-	got, err := r.Reverse(t.Context(), query(cellFar))
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal("Main Street", got[0].Address.Street)
-	is.Equal(0, geo.reverseCalls)
-}
-
-func TestReverseNegativeAnswerCached(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", nil, nil)
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
-
-	got, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err, "a genuine 'nothing here' is an answer, not an error")
-	is.Empty(got)
-	is.Equal(1, geo.reverseCalls)
-
-	got, err = r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	is.Empty(got)
-	is.Equal(1, geo.reverseCalls, "the negative answer must be cached")
-}
-
-func TestReverseMultiResultRoundTrip(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	results := []domain.Result{
+func TestReverseCacheReuse(t *testing.T) {
+	houseAnswer := house(cellAnswer.Lat(), cellAnswer.Lon())
+	streetAnswer := street(cellAnswer.Lat(), cellAnswer.Lon())
+	multi := []domain.Result{
 		house(cellAnswer.Lat(), cellAnswer.Lon()),
 		{Address: domain.Address{Name: "Corner Shop", OsmID: 123, OsmType: "N", OsmKey: "shop", OsmValue: "convenience"}},
 	}
-	geo := reverseGeocoder("p1", results, nil)
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
 
-	got, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	must.Len(got, 2)
+	tests := []struct {
+		name         string
+		seed         []domain.Result // pre-seeded under the query's key; nil means cold cache
+		upstream     []domain.Result // what the provider answers when called
+		query        domain.Coordinates
+		calls        int // sequential Reverse calls
+		wantLen      int
+		wantUpstream int
+		wantSets     int // cache writes after seeding
+		wantOutcomes []port.CacheOutcome
+		wantName     string // spot-check the last result set's notable field
+	}{
+		{
+			name:         "hit near the answer skips upstream",
+			seed:         []domain.Result{houseAnswer},
+			upstream:     []domain.Result{houseAnswer},
+			query:        cellNear,
+			calls:        1,
+			wantLen:      1,
+			wantUpstream: 0,
+			wantSets:     0,
+			wantOutcomes: []port.CacheOutcome{port.CacheHit},
+		},
+		{
+			name:         "stale entry past the reuse distance re-queries",
+			seed:         []domain.Result{houseAnswer},
+			upstream:     []domain.Result{house(cellFar.Lat(), cellFar.Lon())},
+			query:        cellFar,
+			calls:        1,
+			wantLen:      1,
+			wantUpstream: 1,
+			wantSets:     1,
+			wantOutcomes: []port.CacheOutcome{port.CacheStale},
+		},
+		{
+			name:         "street-level answer is reused across the cell",
+			seed:         []domain.Result{streetAnswer},
+			upstream:     []domain.Result{streetAnswer},
+			query:        cellFar,
+			calls:        1,
+			wantLen:      1,
+			wantUpstream: 0,
+			wantSets:     0,
+			wantOutcomes: []port.CacheOutcome{port.CacheHit},
+		},
+		{
+			name:         "genuine nothing-here answer is cached",
+			seed:         nil,
+			upstream:     nil,
+			query:        cellNear,
+			calls:        2,
+			wantLen:      0,
+			wantUpstream: 1,
+			wantSets:     1,
+			wantOutcomes: []port.CacheOutcome{port.CacheMiss, port.CacheHit},
+		},
+		{
+			name:         "multi-result answer set round-trips through the cache",
+			seed:         nil,
+			upstream:     multi,
+			query:        cellNear,
+			calls:        2,
+			wantLen:      2,
+			wantUpstream: 1,
+			wantSets:     1,
+			wantOutcomes: []port.CacheOutcome{port.CacheMiss, port.CacheHit},
+			wantName:     "Corner Shop",
+		},
+	}
 
-	got, err = r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	must.Len(got, 2, "the full answer set must come back from the cache")
-	is.Equal("Corner Shop", got[1].Address.Name)
-	is.Equal(1, geo.reverseCalls)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			cache, metrics := newFakeCache(), &fakeMetrics{}
+			geo := reverseGeocoder("p1", tt.upstream, nil)
+			if tt.seed != nil {
+				cache.Set(reverseKey(query(tt.query)), port.Entry{Results: tt.seed})
+				cache.sets = 0
+			}
+			r := newRouter(cache, metrics, Provider{Geocoder: geo})
+
+			var got []domain.Result
+			var err error
+			for range tt.calls {
+				got, err = r.Reverse(t.Context(), query(tt.query))
+				must.NoError(err)
+			}
+			must.Len(got, tt.wantLen)
+			is.Equal(tt.wantUpstream, geo.reverseCalls)
+			is.Equal(tt.wantSets, cache.sets)
+			is.Equal(tt.wantOutcomes, metrics.cacheOutcomes)
+			if tt.wantName != "" {
+				is.Equal(tt.wantName, got[len(got)-1].Address.Name)
+			}
+		})
+	}
 }
 
-func TestReverseKeySeparatesOptions(t *testing.T) {
+func TestReverseFailures(t *testing.T) {
+	tests := []struct {
+		name         string
+		providers    []Provider
+		wantErr      error
+		wantCalls    []int // upstream calls per provider, in order
+		wantSets     int
+		wantOutcomes []port.ProviderOutcome
+	}{
+		{
+			name: "all providers failing is an error, never an empty answer",
+			providers: []Provider{
+				{Geocoder: reverseGeocoder("p1", nil, errBoom)},
+				{Geocoder: reverseGeocoder("p2", nil, errBoom)},
+			},
+			wantErr:      domain.ErrAllProvidersFailed,
+			wantCalls:    []int{1, 1},
+			wantSets:     0,
+			wantOutcomes: []port.ProviderOutcome{port.ProviderError, port.ProviderError},
+		},
+		{
+			name: "failover to the second provider",
+			providers: []Provider{
+				{Geocoder: reverseGeocoder("p1", nil, errBoom)},
+				{Geocoder: reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)},
+			},
+			wantErr:      nil,
+			wantCalls:    []int{1, 1},
+			wantSets:     1,
+			wantOutcomes: []port.ProviderOutcome{port.ProviderError, port.ProviderSuccess},
+		},
+		{
+			name:         "no providers configured",
+			providers:    nil,
+			wantErr:      domain.ErrNoProviders,
+			wantCalls:    nil,
+			wantSets:     0,
+			wantOutcomes: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			cache, metrics := newFakeCache(), &fakeMetrics{}
+			r := newRouter(cache, metrics, tt.providers...)
+
+			got, err := r.Reverse(t.Context(), query(cellNear))
+			if tt.wantErr != nil {
+				must.Error(err)
+				must.ErrorIs(err, tt.wantErr)
+				is.Nil(got, "a failure must not masquerade as an answer")
+			} else {
+				must.NoError(err)
+				must.NotEmpty(got)
+			}
+			for i, p := range tt.providers {
+				is.Equal(tt.wantCalls[i], p.Geocoder.(*fakeGeocoder).reverseCalls, "provider %d", i)
+			}
+			is.Equal(tt.wantSets, cache.sets, "failures are never cached")
+			is.Equal(tt.wantOutcomes, outcomesOf(metrics))
+		})
+	}
+}
+
+func TestReverseKeys(t *testing.T) {
 	is := assert.New(t)
 	base := query(cellNear)
-	// The exact format is pinned so a key-format change cannot slip past the
-	// option-separation checks below.
+	// The exact formats are pinned so a key-format change cannot slip past
+	// the option-separation checks.
 	is.Equal("r:"+cellNear.CellKey()+":1:0:false", reverseKey(base))
+	is.Equal("f:0:main street", forwardKey(domain.ForwardQuery{Text: " Main STREET "}))
+
 	is.NotEqual(reverseKey(base), reverseKey(domain.ReverseQuery{Coordinates: cellNear, Limit: 10, Radius: 1, DistanceSort: true}))
-	// Limit 0 is the provider default and shares a key with explicit Limit 1.
+	// Reverse Limit 0 is the provider default (one result) and shares a key
+	// with explicit Limit 1.
 	is.Equal(reverseKey(base), reverseKey(domain.ReverseQuery{Coordinates: cellNear, Limit: 1}))
+	// Forward Limit 0 is the provider default (15 results) and must not
+	// share a key with explicit Limit 1.
+	is.NotEqual(forwardKey(domain.ForwardQuery{Text: "x"}), forwardKey(domain.ForwardQuery{Text: "x", Limit: 1}))
 }
 
-// --- reverse: the never-blank rule -----------------------------------------
+func TestReverseQuota(t *testing.T) {
+	tests := []struct {
+		name          string
+		providers     []Provider
+		wantCalls     []int
+		wantSecondErr error
+	}{
+		{
+			name: "exhaustion falls over to the next provider",
+			providers: []Provider{
+				{Geocoder: reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil), DailyQuota: 1},
+				{Geocoder: reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)},
+			},
+			wantCalls:     []int{1, 1},
+			wantSecondErr: nil,
+		},
+		{
+			name: "all quotas exhausted is an error",
+			providers: []Provider{
+				{Geocoder: reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil), DailyQuota: 1},
+			},
+			wantCalls:     []int{1},
+			wantSecondErr: domain.ErrAllProvidersFailed,
+		},
+	}
 
-func TestReverseAllProvidersFailIsAnError(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	p1 := reverseGeocoder("p1", nil, errBoom)
-	p2 := reverseGeocoder("p2", nil, errBoom)
-	r := newRouter(cache, metrics, Provider{Geocoder: p1}, Provider{Geocoder: p2})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			cache, metrics := newFakeCache(), &fakeMetrics{}
+			r := newRouter(cache, metrics, tt.providers...)
 
-	got, err := r.Reverse(t.Context(), query(cellNear))
-	must.Error(err)
-	must.ErrorIs(err, domain.ErrAllProvidersFailed)
-	is.Nil(got, "a total failure must not masquerade as an empty answer")
-	is.Equal(0, cache.sets, "failures are never cached")
-	is.Equal([]port.ProviderOutcome{port.ProviderError, port.ProviderError}, outcomesOf(metrics))
-}
-
-func TestReverseFailoverToSecondProvider(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	p1 := reverseGeocoder("p1", nil, errBoom)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(cache, metrics, Provider{Geocoder: p1}, Provider{Geocoder: p2})
-
-	got, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(1, p1.reverseCalls)
-	is.Equal(1, p2.reverseCalls)
-}
-
-func TestReverseNoProviders(t *testing.T) {
-	must := require.New(t)
-	r := newRouter(newFakeCache(), &fakeMetrics{})
-
-	_, err := r.Reverse(t.Context(), query(cellNear))
-	must.Error(err)
-	must.ErrorIs(err, domain.ErrNoProviders)
-}
-
-// --- quotas and pacing ------------------------------------------------------
-
-func TestReverseQuotaExhaustionFallsOver(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(cache, metrics,
-		Provider{Geocoder: p1, DailyQuota: 1},
-		Provider{Geocoder: p2},
-	)
-
-	// Two distinct cells, so the cache cannot serve the second call.
-	_, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	farCell := coords(51.47830, -0.06140)
-	_, err = r.Reverse(t.Context(), query(farCell))
-	must.NoError(err)
-
-	is.Equal(1, p1.reverseCalls, "p1's quota is one call")
-	is.Equal(1, p2.reverseCalls, "the second lookup falls over to p2")
-	is.Contains(outcomesOf(metrics), port.ProviderQuotaExhausted)
-}
-
-func TestReverseAllQuotasExhaustedIsAnError(t *testing.T) {
-	must := require.New(t)
-	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: p1, DailyQuota: 1})
-
-	_, err := r.Reverse(t.Context(), query(cellNear))
-	must.NoError(err)
-	_, err = r.Reverse(t.Context(), query(coords(51.47830, -0.06140)))
-	must.Error(err)
-	must.ErrorIs(err, domain.ErrAllProvidersFailed)
-	must.Equal(1, p1.reverseCalls)
+			// Two distinct cells, so the cache cannot serve the second call.
+			_, err := r.Reverse(t.Context(), query(cellNear))
+			must.NoError(err)
+			_, err = r.Reverse(t.Context(), query(otherCell))
+			if tt.wantSecondErr != nil {
+				must.Error(err)
+				must.ErrorIs(err, tt.wantSecondErr)
+			} else {
+				must.NoError(err)
+			}
+			for i, p := range tt.providers {
+				is.Equal(tt.wantCalls[i], p.Geocoder.(*fakeGeocoder).reverseCalls, "provider %d", i)
+			}
+			is.Contains(outcomesOf(metrics), port.ProviderQuotaExhausted)
+		})
+	}
 }
 
 func TestReversePacingFailureMovesOn(t *testing.T) {
@@ -401,57 +453,99 @@ func TestReverseContextCancelledDuringProviderCall(t *testing.T) {
 		"a caller-side cancellation is not a provider failure")
 }
 
-// --- forward ----------------------------------------------------------------
+func TestForward(t *testing.T) {
+	answer := []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}
 
-func TestForwardCachesByNormalisedText(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(cache, metrics, Provider{Geocoder: geo})
-
-	got, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "  MAIN Street ", Limit: 1})
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(1, geo.forwardCalls)
-
-	got, err = r.Forward(t.Context(), domain.ForwardQuery{Text: "main street", Limit: 1})
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(1, geo.forwardCalls, "the normalised text key must hit the cache")
-	is.Equal([]port.CacheOutcome{port.CacheMiss, port.CacheHit}, metrics.cacheOutcomes)
-}
-
-func TestForwardKeySeparatesLimit(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: geo})
-
-	_, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "main street", Limit: 1})
-	must.NoError(err)
-	_, err = r.Forward(t.Context(), domain.ForwardQuery{Text: "main street", Limit: 3})
-	must.NoError(err)
-	is.Equal(2, geo.forwardCalls, "a wider request must not be served a narrower cached answer")
-}
-
-func TestForwardEmptyAnswerCached(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	metrics := &fakeMetrics{}
-	geo := &fakeGeocoder{
-		name: "p1",
-		forwardFn: func(context.Context, domain.ForwardQuery) ([]domain.Result, error) {
-			return nil, nil
+	tests := []struct {
+		name          string
+		queries       []domain.ForwardQuery // sequential calls through one router
+		upstream      []domain.Result
+		upstreamErr   error
+		wantCalls     int
+		wantLen       int
+		wantErr       error
+		wantOutcomes  []port.CacheOutcome
+		wantMetricOut port.ProviderOutcome
+	}{
+		{
+			name: "normalised text hits the cache",
+			queries: []domain.ForwardQuery{
+				{Text: "  MAIN Street ", Limit: 1},
+				{Text: "main street", Limit: 1},
+			},
+			upstream:     answer,
+			wantCalls:    1,
+			wantLen:      1,
+			wantOutcomes: []port.CacheOutcome{port.CacheMiss, port.CacheHit},
+		},
+		{
+			name: "different limits do not share an entry",
+			queries: []domain.ForwardQuery{
+				{Text: "main street", Limit: 1},
+				{Text: "main street", Limit: 3},
+			},
+			upstream:     answer,
+			wantCalls:    2,
+			wantLen:      1,
+			wantOutcomes: []port.CacheOutcome{port.CacheMiss, port.CacheMiss},
+		},
+		{
+			name: "genuine empty answer is cached and recorded as empty",
+			queries: []domain.ForwardQuery{
+				{Text: "nowhere"},
+				{Text: "NOWHERE"},
+			},
+			upstream:      nil,
+			wantCalls:     1,
+			wantLen:       0,
+			wantOutcomes:  []port.CacheOutcome{port.CacheMiss, port.CacheHit},
+			wantMetricOut: port.ProviderEmpty,
+		},
+		{
+			name: "failover to the second provider",
+			queries: []domain.ForwardQuery{
+				{Text: "main street"},
+			},
+			upstream:      answer,
+			upstreamErr:   errBoom,
+			wantCalls:     1,
+			wantLen:       1,
+			wantOutcomes:  []port.CacheOutcome{port.CacheMiss},
+			wantMetricOut: port.ProviderError,
 		},
 	}
-	r := newRouter(newFakeCache(), metrics, Provider{Geocoder: geo})
 
-	got, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "nowhere"})
-	must.NoError(err, "a genuine empty answer is not an error")
-	is.Empty(got)
-	is.Contains(outcomesOf(metrics), port.ProviderEmpty)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			metrics := &fakeMetrics{}
+			p1 := reverseGeocoder("p1", tt.upstream, tt.upstreamErr)
+			p2 := reverseGeocoder("p2", answer, nil)
+			r := newRouter(newFakeCache(), metrics, Provider{Geocoder: p1}, Provider{Geocoder: p2})
 
-	_, err = r.Forward(t.Context(), domain.ForwardQuery{Text: "NOWHERE"})
-	must.NoError(err)
-	is.Equal(1, geo.forwardCalls, "the empty answer must be cached")
+			var got []domain.Result
+			var err error
+			for _, q := range tt.queries {
+				got, err = r.Forward(t.Context(), q)
+			}
+			if tt.wantErr != nil {
+				must.ErrorIs(err, tt.wantErr)
+				return
+			}
+			must.NoError(err)
+			must.Len(got, tt.wantLen)
+			if tt.upstreamErr == nil {
+				is.Equal(tt.wantCalls, p1.forwardCalls)
+			} else {
+				is.Equal(1, p1.forwardCalls)
+				is.Equal(tt.wantCalls, p2.forwardCalls)
+			}
+			is.Equal(tt.wantOutcomes, metrics.cacheOutcomes)
+			if tt.wantMetricOut != "" {
+				is.Contains(outcomesOf(metrics), tt.wantMetricOut)
+			}
+		})
+	}
 }
 
 func TestForwardOversizedTextRejected(t *testing.T) {
@@ -464,21 +558,6 @@ func TestForwardOversizedTextRejected(t *testing.T) {
 	must.ErrorIs(err, domain.ErrInvalidQuery)
 	must.Equal(0, geo.forwardCalls)
 }
-
-func TestForwardFailover(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	p1 := reverseGeocoder("p1", nil, errBoom)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
-	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: p1}, Provider{Geocoder: p2})
-
-	got, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "main street"})
-	must.NoError(err)
-	must.Len(got, 1)
-	is.Equal(1, p1.forwardCalls)
-	is.Equal(1, p2.forwardCalls)
-}
-
-// --- constructor validation --------------------------------------------------
 
 func TestNewPanicsOnNilDependencies(t *testing.T) {
 	must := require.New(t)
