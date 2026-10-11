@@ -11,7 +11,9 @@ import (
 //
 // A location history is PII, so Coordinates deliberately has no String or
 // MarshalText helper: raw coordinates must not end up in logs or metrics by
-// convenience.
+// convenience. Note the unexported fields also mean encoding/json would
+// silently emit an empty object; the Photon adapter must serialise Lat()
+// and Lon() explicitly.
 type Coordinates struct {
 	lat float64
 	lon float64
