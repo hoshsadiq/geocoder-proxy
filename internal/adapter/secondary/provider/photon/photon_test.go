@@ -145,6 +145,24 @@ func TestFeaturesWithInvalidCoordinatesAreDropped(t *testing.T) {
 	is.Equal("GB", got[0].Address.CountryCode, "countrycode is normalised to uppercase")
 }
 
+func TestOsmIDAsQuotedStringDecodes(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[
+			{"type":"Feature","properties":{"osm_id":"10033986098","osm_type":"N","name":"Quoted ID"},
+			 "geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}
+		]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 51.4774, -0.061),
+	})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal(int64(10033986098), got[0].Address.OsmID, "some Photon-shaped upstreams quote the osm id")
+}
+
 func mustCoords(t *testing.T, lat, lon float64) domain.Coordinates {
 	t.Helper()
 	c, err := domain.NewCoordinates(lat, lon)

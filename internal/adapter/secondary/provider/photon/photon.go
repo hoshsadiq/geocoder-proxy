@@ -8,6 +8,7 @@ package photon
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/httpfetch"
+	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/jsonnum"
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/registry"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
@@ -133,22 +135,24 @@ type feature struct {
 }
 
 type properties struct {
-	OsmID       int64  `json:"osm_id"`
-	OsmType     string `json:"osm_type"`
-	OsmKey      string `json:"osm_key"`
-	OsmValue    string `json:"osm_value"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Street      string `json:"street"`
-	HouseNumber string `json:"housenumber"`
-	Postcode    string `json:"postcode"`
-	City        string `json:"city"`
-	Locality    string `json:"locality"`
-	District    string `json:"district"`
-	County      string `json:"county"`
-	State       string `json:"state"`
-	Country     string `json:"country"`
-	CountryCode string `json:"countrycode"`
+	// LocationIQ-shaped and some Photon-shaped upstreams quote numeric ids;
+	// json.Number accepts both forms.
+	OsmID       json.Number `json:"osm_id"`
+	OsmType     string      `json:"osm_type"`
+	OsmKey      string      `json:"osm_key"`
+	OsmValue    string      `json:"osm_value"`
+	Name        string      `json:"name"`
+	Type        string      `json:"type"`
+	Street      string      `json:"street"`
+	HouseNumber string      `json:"housenumber"`
+	Postcode    string      `json:"postcode"`
+	City        string      `json:"city"`
+	Locality    string      `json:"locality"`
+	District    string      `json:"district"`
+	County      string      `json:"county"`
+	State       string      `json:"state"`
+	Country     string      `json:"country"`
+	CountryCode string      `json:"countrycode"`
 }
 
 func (f feature) toResult() (domain.Result, bool) {
@@ -175,7 +179,7 @@ func (f feature) toResult() (domain.Result, bool) {
 		State:       f.Properties.State,
 		Country:     f.Properties.Country,
 		CountryCode: strings.ToUpper(f.Properties.CountryCode),
-		OsmID:       f.Properties.OsmID,
+		OsmID:       jsonnum.Int64(f.Properties.OsmID),
 		OsmType:     domain.CanonicalOsmType(f.Properties.OsmType),
 		OsmKey:      f.Properties.OsmKey,
 		OsmValue:    f.Properties.OsmValue,

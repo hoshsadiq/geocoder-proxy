@@ -137,6 +137,23 @@ func TestUpstreamErrorIsCoordinateFree(t *testing.T) {
 	is.NotContains(err.Error(), "test-key", "provider errors must never carry the API key")
 }
 
+func TestUnexpectedShapeIsAnError(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	// A GeoJSON body (what the API answers without format=json) must not
+	// read as a genuine empty.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 51.4774, -0.061),
+	})
+	must.Error(err)
+	must.ErrorContains(err, "unexpected response shape")
+	is.Nil(got)
+}
+
 func mustCoords(t *testing.T, lat, lon float64) domain.Coordinates {
 	t.Helper()
 	c, err := domain.NewCoordinates(lat, lon)

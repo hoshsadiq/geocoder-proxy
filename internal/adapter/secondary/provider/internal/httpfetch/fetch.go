@@ -27,6 +27,9 @@ func NewClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
 			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
 				return fmt.Errorf("refusing cross-host redirect")
 			}

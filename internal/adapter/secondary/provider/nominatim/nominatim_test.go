@@ -144,6 +144,29 @@ func TestOsmKeyValueAndCountyFallback(t *testing.T) {
 	is.Equal("Greater London", got[0].Address.County, "state_district fills County when county is absent")
 }
 
+func TestForwardErrorBodyClassification(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	for body, want := range map[string]struct{ empty, isErr bool }{
+		`{"error":"Unable to geocode"}`:        {true, false},
+		`{"error":"Bandwidth limit exceeded"}`: {false, true},
+		`{"error":""}`:                         {false, true},
+		`<html>not json</html>`:                {false, true},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		got, err := newTestClient(t, srv.URL).Forward(t.Context(), domain.ForwardQuery{Text: "x"})
+		srv.Close()
+		if want.isErr {
+			must.Error(err, "body %s", body)
+			is.Nil(got)
+		} else if want.empty {
+			must.NoError(err, "body %s", body)
+			is.Empty(got, "the no-match marker is a genuine empty on forward too")
+		}
+	}
+}
+
 func TestUserAgentRequired(t *testing.T) {
 	must := require.New(t)
 	_, err := New(registry.Config{})

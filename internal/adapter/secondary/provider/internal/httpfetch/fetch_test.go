@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,6 +82,22 @@ func TestSameHostRedirectFollowed(t *testing.T) {
 
 	var out struct{ Ok bool }
 	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL+"/old", nil, &out))
+}
+
+func TestRedirectCapRestored(t *testing.T) {
+	must := require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	var out struct{}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL+"/loop", nil, &out)
+	must.Error(err)
+	must.ErrorContains(err, "stopped after 10 redirects")
+	must.Less(calls.Load(), int32(15), "an infinite redirect loop must be cut short")
 }
 
 func TestAcceptHeaderSent(t *testing.T) {

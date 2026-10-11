@@ -7,6 +7,7 @@ package geoapify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -108,8 +109,14 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if body.Error != "" {
 		return nil, fmt.Errorf("upstream returned an error response: %s", body.Error)
 	}
-	results := make([]domain.Result, 0, len(body.Results))
-	for _, r := range body.Results {
+	if body.Results == nil {
+		// The shape we asked for (format=json) carries a results key; its
+		// absence means the upstream answered in another shape, which must
+		// not read as a genuine "nothing here".
+		return nil, errors.New("unexpected response shape: no results key")
+	}
+	results := make([]domain.Result, 0, len(*body.Results))
+	for _, r := range *body.Results {
 		if result, ok := r.toResult(); ok {
 			results = append(results, result)
 		}
@@ -118,10 +125,12 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 }
 
 // response is the Geoapify Geocoding API wire shape (format=json): a flat
-// results array, or an error object on failure.
+// results array, or an error object on failure. Results is a pointer so an
+// absent key (a shape change, or a format=json that never took effect) is
+// distinguishable from a genuinely empty day.
 type response struct {
-	Results []entry `json:"results"`
-	Error   string  `json:"error"`
+	Results *[]entry `json:"results"`
+	Error   string   `json:"error"`
 }
 
 type entry struct {

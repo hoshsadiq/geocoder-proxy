@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/httpfetch"
+	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/jsonnum"
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/registry"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
@@ -117,9 +118,21 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 		v.Set("limit", strconv.Itoa(q.Limit))
 	}
 
-	var places []place
-	if err := c.get(ctx, "/v1/search", v, &places); err != nil {
+	// The body is an array of places, or an error object.
+	var raw json.RawMessage
+	if err := c.get(ctx, "/v1/search", v, &raw); err != nil {
 		return nil, err
+	}
+	var places []place
+	if err := json.Unmarshal(raw, &places); err != nil {
+		msg := errorBodyMessage(raw)
+		if msg == "" {
+			return nil, fmt.Errorf("decoding upstream response: %w", err)
+		}
+		if msg == noMatchError {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("upstream returned an error response: %s", msg)
 	}
 	results := make([]domain.Result, 0, len(places))
 	for _, p := range places {
@@ -130,6 +143,23 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// errorBodyMessage extracts the message when the body is an error object;
+// empty when it is not. An empty or unparseable message is still an error
+// response, not a no-match.
+func errorBodyMessage(raw json.RawMessage) string {
+	var body struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) != nil || len(body.Error) == 0 {
+		return ""
+	}
+	var msg string
+	if json.Unmarshal(body.Error, &msg) == nil && msg != "" {
+		return msg
+	}
+	return "unrecognised error body"
 }
 
 func (c *Client) get(ctx context.Context, path string, v url.Values, out any) error {
@@ -172,14 +202,15 @@ type address struct {
 	CountryCode   string `json:"country_code"`
 }
 
-// errorMessage extracts the provider's error message when the response is an
-// error object instead of a place.
+// errorMessage extracts the provider's error message when the response is
+// an error object instead of a place. An empty or unparseable message is
+// still an error response, not a no-match.
 func (p place) errorMessage() string {
 	if len(p.Error) == 0 {
 		return ""
 	}
 	var msg string
-	if json.Unmarshal(p.Error, &msg) == nil {
+	if json.Unmarshal(p.Error, &msg) == nil && msg != "" {
 		return msg
 	}
 	return "unrecognised error body"
@@ -205,7 +236,6 @@ func (p place) toResult() (domain.Result, error) {
 		// sentinel must not escape here.
 		return domain.Result{}, errors.New("out-of-range coordinates in response")
 	}
-	osmID, _ := p.OsmID.Int64()
 
 	name := p.Name
 	if name == "" {
@@ -226,7 +256,7 @@ func (p place) toResult() (domain.Result, error) {
 			State:       p.Address.State,
 			Country:     p.Address.Country,
 			CountryCode: strings.ToUpper(p.Address.CountryCode),
-			OsmID:       osmID,
+			OsmID:       jsonnum.Int64(p.OsmID),
 			OsmType:     domain.CanonicalOsmType(p.OsmType),
 			OsmKey:      p.Class,
 			OsmValue:    p.Type,
