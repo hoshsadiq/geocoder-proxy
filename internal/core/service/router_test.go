@@ -103,14 +103,14 @@ var errBoom = errors.New("upstream exploded")
 func house(lat, lon float64) domain.Result {
 	return domain.Result{
 		Address:     domain.Address{HouseNumber: "12", Street: "Main Street"},
-		Coordinates: domain.Coordinates{Lat: lat, Lon: lon},
+		Coordinates: coords(lat, lon),
 	}
 }
 
 func street(lat, lon float64) domain.Result {
 	return domain.Result{
 		Address:     domain.Address{Street: "Main Street"},
-		Coordinates: domain.Coordinates{Lat: lat, Lon: lon},
+		Coordinates: coords(lat, lon),
 	}
 }
 
@@ -137,10 +137,20 @@ func newRouter(cache *fakeCache, metrics *fakeMetrics, providers ...Provider) *R
 // sits 5.7 m from the answer (inside the 25 m reuse distance); cellFar sits
 // 33.4 m away in the same cell (outside it).
 var (
-	cellAnswer = domain.Coordinates{Lat: 51.47740, Lon: -0.06100}
-	cellNear   = domain.Coordinates{Lat: 51.47745, Lon: -0.06098}
-	cellFar    = domain.Coordinates{Lat: 51.47770, Lon: -0.06100}
+	cellAnswer = coords(51.47740, -0.06100)
+	cellNear   = coords(51.47745, -0.06098)
+	cellFar    = coords(51.47770, -0.06100)
 )
+
+// coords builds valid Coordinates for the fixtures; the literals are all in
+// range, so a failure here is a bug in the fixture, not the code.
+func coords(lat, lon float64) domain.Coordinates {
+	c, err := domain.NewCoordinates(lat, lon)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
 
 func query(c domain.Coordinates) domain.ReverseQuery {
 	return domain.ReverseQuery{Coordinates: c}
@@ -159,9 +169,9 @@ func outcomesOf(m *fakeMetrics) []port.ProviderOutcome {
 func TestReverseCacheHitNearAnswer(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 
-	cache.Set(reverseKey(query(cellNear)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}})
+	cache.Set(reverseKey(query(cellNear)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}})
 	r := newRouter(cache, metrics, Provider{Geocoder: geo})
 
 	got, err := r.Reverse(t.Context(), query(cellNear))
@@ -174,11 +184,11 @@ func TestReverseCacheHitNearAnswer(t *testing.T) {
 func TestReverseStaleEntryCallsUpstream(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellFar.Lat, cellFar.Lon)}, nil)
+	geo := reverseGeocoder("p1", []domain.Result{house(cellFar.Lat(), cellFar.Lon())}, nil)
 
 	// Cached house-numbered answer sits 33.4 m from the request: too far to
 	// reuse, same cell.
-	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}})
+	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}})
 	cache.sets = 0
 	r := newRouter(cache, metrics, Provider{Geocoder: geo})
 
@@ -193,11 +203,11 @@ func TestReverseStaleEntryCallsUpstream(t *testing.T) {
 func TestReverseStreetLevelReusedAcrossCell(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{street(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	geo := reverseGeocoder("p1", []domain.Result{street(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 
 	// Street-level answers carry no house number, so the reuse distance does
 	// not apply: a street name does not change inside one cell.
-	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{street(cellAnswer.Lat, cellAnswer.Lon)}})
+	cache.Set(reverseKey(query(cellFar)), port.Entry{Results: []domain.Result{street(cellAnswer.Lat(), cellAnswer.Lon())}})
 	r := newRouter(cache, metrics, Provider{Geocoder: geo})
 
 	got, err := r.Reverse(t.Context(), query(cellFar))
@@ -228,7 +238,7 @@ func TestReverseMultiResultRoundTrip(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
 	results := []domain.Result{
-		house(cellAnswer.Lat, cellAnswer.Lon),
+		house(cellAnswer.Lat(), cellAnswer.Lon()),
 		{Address: domain.Address{Name: "Corner Shop", OsmID: 123, OsmType: "N", OsmKey: "shop", OsmValue: "convenience"}},
 	}
 	geo := reverseGeocoder("p1", results, nil)
@@ -277,7 +287,7 @@ func TestReverseFailoverToSecondProvider(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
 	p1 := reverseGeocoder("p1", nil, errBoom)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(cache, metrics, Provider{Geocoder: p1}, Provider{Geocoder: p2})
 
 	got, err := r.Reverse(t.Context(), query(cellNear))
@@ -301,8 +311,8 @@ func TestReverseNoProviders(t *testing.T) {
 func TestReverseQuotaExhaustionFallsOver(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
+	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(cache, metrics,
 		Provider{Geocoder: p1, DailyQuota: 1},
 		Provider{Geocoder: p2},
@@ -311,7 +321,7 @@ func TestReverseQuotaExhaustionFallsOver(t *testing.T) {
 	// Two distinct cells, so the cache cannot serve the second call.
 	_, err := r.Reverse(t.Context(), query(cellNear))
 	must.NoError(err)
-	farCell := domain.Coordinates{Lat: 51.47830, Lon: -0.06140}
+	farCell := coords(51.47830, -0.06140)
 	_, err = r.Reverse(t.Context(), query(farCell))
 	must.NoError(err)
 
@@ -322,12 +332,12 @@ func TestReverseQuotaExhaustionFallsOver(t *testing.T) {
 
 func TestReverseAllQuotasExhaustedIsAnError(t *testing.T) {
 	must := require.New(t)
-	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: p1, DailyQuota: 1})
 
 	_, err := r.Reverse(t.Context(), query(cellNear))
 	must.NoError(err)
-	_, err = r.Reverse(t.Context(), query(domain.Coordinates{Lat: 51.47830, Lon: -0.06140}))
+	_, err = r.Reverse(t.Context(), query(coords(51.47830, -0.06140)))
 	must.Error(err)
 	must.ErrorIs(err, domain.ErrAllProvidersFailed)
 	must.Equal(1, p1.reverseCalls)
@@ -336,7 +346,7 @@ func TestReverseAllQuotasExhaustedIsAnError(t *testing.T) {
 func TestReversePacingFailureMovesOn(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	p1 := reverseGeocoder("p1", nil, nil)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), &fakeMetrics{},
 		Provider{Geocoder: p1, Limiter: fakeLimiter{err: errors.New("would exceed deadline")}},
 		Provider{Geocoder: p2},
@@ -351,7 +361,7 @@ func TestReversePacingFailureMovesOn(t *testing.T) {
 
 func TestReverseContextCancelledDuringPacing(t *testing.T) {
 	must := require.New(t)
-	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p1 := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), &fakeMetrics{},
 		Provider{Geocoder: p1, Limiter: fakeLimiter{block: true}},
 	)
@@ -375,7 +385,7 @@ func TestReverseContextCancelledDuringProviderCall(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), metrics,
 		Provider{Geocoder: p1, DailyQuota: 10},
 		Provider{Geocoder: p2, DailyQuota: 10},
@@ -396,7 +406,7 @@ func TestReverseContextCancelledDuringProviderCall(t *testing.T) {
 func TestForwardCachesByNormalisedText(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(cache, metrics, Provider{Geocoder: geo})
 
 	got, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "  MAIN Street ", Limit: 1})
@@ -413,7 +423,7 @@ func TestForwardCachesByNormalisedText(t *testing.T) {
 
 func TestForwardKeySeparatesLimit(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
-	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	geo := reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: geo})
 
 	_, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "main street", Limit: 1})
@@ -458,7 +468,7 @@ func TestForwardOversizedTextRejected(t *testing.T) {
 func TestForwardFailover(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	p1 := reverseGeocoder("p1", nil, errBoom)
-	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat, cellAnswer.Lon)}, nil)
+	p2 := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(newFakeCache(), &fakeMetrics{}, Provider{Geocoder: p1}, Provider{Geocoder: p2})
 
 	got, err := r.Forward(t.Context(), domain.ForwardQuery{Text: "main street"})

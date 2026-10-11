@@ -5,17 +5,16 @@ import (
 	"math"
 )
 
-// Coordinates is a WGS84 latitude/longitude pair. Build it with
-// NewCoordinates: the fields are exported for the provider adapters, but
-// callers on the request path must go through the constructor so NaN and
+// Coordinates is a WGS84 latitude/longitude pair. The fields are unexported
+// so every value on the request path comes through NewCoordinates: NaN and
 // out-of-range input cannot reach the cache-key and distance math.
 //
 // A location history is PII, so Coordinates deliberately has no String or
 // MarshalText helper: raw coordinates must not end up in logs or metrics by
 // convenience.
 type Coordinates struct {
-	Lat float64
-	Lon float64
+	lat float64
+	lon float64
 }
 
 // NewCoordinates validates the ranges and returns the pair. The error names
@@ -30,8 +29,14 @@ func NewCoordinates(lat, lon float64) (Coordinates, error) {
 	if lon < -180 || lon > 180 {
 		return Coordinates{}, fmt.Errorf("%w: longitude outside [-180, 180]", ErrInvalidCoordinates)
 	}
-	return Coordinates{Lat: lat, Lon: lon}, nil
+	return Coordinates{lat: lat, lon: lon}, nil
 }
+
+// Lat returns the latitude in degrees.
+func (c Coordinates) Lat() float64 { return c.lat }
+
+// Lon returns the longitude in degrees.
+func (c Coordinates) Lon() float64 { return c.lon }
 
 // DistanceTo returns the great-circle distance to other in metres (haversine).
 // Used by the cache reuse rule: an answer is only reused for a request close
@@ -40,10 +45,10 @@ func (c Coordinates) DistanceTo(other Coordinates) float64 {
 	const earthRadiusM = 6371000.0
 	const deg = math.Pi / 180
 
-	dLat := (other.Lat - c.Lat) * deg
-	dLon := (other.Lon - c.Lon) * deg
+	dLat := (other.lat - c.lat) * deg
+	dLon := (other.lon - c.lon) * deg
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(c.Lat*deg)*math.Cos(other.Lat*deg)*math.Sin(dLon/2)*math.Sin(dLon/2)
+		math.Cos(c.lat*deg)*math.Cos(other.lat*deg)*math.Sin(dLon/2)*math.Sin(dLon/2)
 	// a can exceed 1 by float noise near the antipodes; sqrt(1-a) would go NaN.
 	a = min(a, 1)
 	return 2 * earthRadiusM * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
@@ -57,7 +62,7 @@ const cellSizeDeg = 0.0005
 // CellKey identifies the cache cell the coordinates fall in, as integer cell
 // indices so the key is exact and free of float formatting surprises.
 func (c Coordinates) CellKey() string {
-	lat := int64(math.Round(c.Lat / cellSizeDeg))
-	lon := int64(math.Round(c.Lon / cellSizeDeg))
+	lat := int64(math.Round(c.lat / cellSizeDeg))
+	lon := int64(math.Round(c.lon / cellSizeDeg))
 	return fmt.Sprintf("%d:%d", lat, lon)
 }
