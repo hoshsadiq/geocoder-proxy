@@ -4,7 +4,6 @@
 package photon
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -125,12 +124,15 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request) {
 // FeatureCollection.
 func (h *Handler) respond(w http.ResponseWriter, r *http.Request, results []domain.Result, err error) {
 	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			// The caller is gone; writing a status nobody reads only adds a
-			// scary log line. Debug, not error.
-			h.logger.DebugContext(r.Context(), "client gone before answer", "error", err)
+		// Only the request's own context says "client gone": a provider's
+		// HTTP timeout wraps context.DeadlineExceeded into the error chain
+		// too, and that shape is an upstream failure (503), not a departed
+		// caller.
+		if r.Context().Err() != nil {
+			h.logger.DebugContext(r.Context(), "client gone before answer", "error", r.Context().Err())
 			return
+		}
+		switch {
 		case errors.Is(err, domain.ErrInvalidQuery), errors.Is(err, domain.ErrInvalidCoordinates):
 			writeError(w, http.StatusBadRequest, "invalid query")
 		case errors.Is(err, domain.ErrAllProvidersFailed), errors.Is(err, domain.ErrNoProviders):

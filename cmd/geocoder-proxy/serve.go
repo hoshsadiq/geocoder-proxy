@@ -107,10 +107,13 @@ func serve(ctx context.Context, configPath string) error {
 	}
 
 	var draining atomic.Bool
+	// WriteTimeout must exceed the worst-case failover chain (providers x
+	// (client timeout x retries + backoff)); 30s was measured below a single
+	// hanging provider's 31.6s.
 	app := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       60 * time.Second,
 	}
 	opsSrv := &http.Server{
@@ -140,13 +143,15 @@ func serve(ctx context.Context, configPath string) error {
 	}
 
 	draining.Store(true)
+	// The ops listener drains first: it is idle by design, and shutting the
+	// app down first could return on its error and skip this one.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := app.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("app shutdown: %w", err)
-	}
 	if err := opsSrv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("ops shutdown: %w", err)
+	}
+	if err := app.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("app shutdown: %w", err)
 	}
 	return nil
 }

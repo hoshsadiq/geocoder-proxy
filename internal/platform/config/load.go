@@ -58,6 +58,7 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 		"ops_addr":    d.OpsAddr,
 		"cache": map[string]any{
 			"ttl":                d.Cache.TTL.String(),
+			"max_entries":        d.Cache.MaxEntries,
 			"max_reuse_distance": d.Cache.MaxReuseDistance,
 		},
 	}, "."), nil)
@@ -125,6 +126,9 @@ func mergeProviders(fromFile []Provider) ([]Provider, error) {
 	byName := make(map[string]Provider, len(fromFile))
 	var order []string
 	for _, p := range fromFile {
+		if _, dup := byName[p.Name]; dup {
+			return nil, fmt.Errorf("provider %q is listed more than once in the config file", p.Name)
+		}
 		byName[p.Name] = p
 		order = append(order, p.Name)
 	}

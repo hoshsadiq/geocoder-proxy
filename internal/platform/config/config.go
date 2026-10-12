@@ -81,8 +81,8 @@ func (c Config) Validate() error {
 	if c.OpsAddr == "" {
 		problems = append(problems, "ops address is empty")
 	}
-	if c.Cache.MaxReuseDistance <= 0 || math.IsNaN(c.Cache.MaxReuseDistance) {
-		problems = append(problems, "cache.max_reuse_distance must be positive")
+	if c.Cache.MaxReuseDistance <= 0 || math.IsNaN(c.Cache.MaxReuseDistance) || math.IsInf(c.Cache.MaxReuseDistance, 0) {
+		problems = append(problems, "cache.max_reuse_distance must be a finite positive number")
 	}
 	if c.Cache.TTL < 0 {
 		problems = append(problems, "cache.ttl must not be negative")

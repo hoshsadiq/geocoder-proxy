@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,6 +77,24 @@ func TestUnknownErrorIs503(t *testing.T) {
 	// The gem Dawarich pins raises only on 400/401/402/429/503; any other
 	// status with a JSON body parses into a final empty answer.
 	must.Equal(http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestProviderTimeoutShapeIs503NotEmpty(t *testing.T) {
+	must := require.New(t)
+	svc := &fakeService{
+		reverseFn: func(context.Context, domain.ReverseQuery) ([]domain.Result, error) {
+			// The shape a provider-side HTTP timeout produces: the sentinel
+			// joined with context.DeadlineExceeded, with a live request
+			// context. Must be a 503, never a 200 with an empty body.
+			return nil, fmt.Errorf("%w: %w", domain.ErrAllProvidersFailed, context.DeadlineExceeded)
+		},
+	}
+	h := New(svc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/reverse?lat=51.4&lon=-0.06", nil))
+	must.Equal(http.StatusServiceUnavailable, rec.Code)
+	must.NotEmpty(rec.Body.String())
 }
 
 func TestCancelledRequestWritesNothing(t *testing.T) {
