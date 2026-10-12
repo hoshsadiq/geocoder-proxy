@@ -84,6 +84,89 @@ func TestSameHostRedirectFollowed(t *testing.T) {
 	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL+"/old", nil, &out))
 }
 
+func TestRetriesTransientFailures(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var out struct{ Ok bool }
+	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out))
+	is.Equal(int32(3), calls.Load(), "two transient 5xx responses are retried")
+	is.True(out.Ok)
+}
+
+func TestRetriesExhausted(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	var out struct{}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out)
+	must.Error(err)
+	must.ErrorContains(err, "upstream status 503")
+	is.Equal(int32(maxRetries+1), calls.Load(), "bounded attempts, then the error surfaces")
+}
+
+func TestClientErrorsNotRetried(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	var out struct{}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out)
+	must.Error(err)
+	is.Equal(int32(1), calls.Load(), "a 404 is not transient")
+}
+
+func TestRetryAfterHonoured(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	start := time.Now()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	var out struct{}
+	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out))
+	is.Equal(int32(2), calls.Load())
+	is.GreaterOrEqual(time.Since(start), time.Second, "the retry waits at least the provider's Retry-After")
+}
+
+func TestContextCancelledDuringBackoff(t *testing.T) {
+	must := require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	var out struct{}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := Do(ctx, NewClient(10*time.Second), srv.URL, nil, &out)
+	must.ErrorIs(err, context.DeadlineExceeded)
+}
+
 func TestRedirectCapRestored(t *testing.T) {
 	must := require.New(t)
 	var calls atomic.Int32

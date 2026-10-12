@@ -1,1 +1,55 @@
-{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"osm_type":"N","osm_id":10033986098,"osm_key":"amenity","osm_value":"bus_station","type":"house","name":"Main Street","street":"Main Bus Terminal","locality":"East End-Danforth","city":"Toronto","state":"Ontario","country":"Canada","postcode":"M4C 1L7","countrycode":"CA"},"geometry":{"type":"Point","coordinates":[-79.3015835,43.6890547]}},{"type":"Feature","properties":{"osm_type":"N","osm_id":5326541297,"osm_key":"railway","osm_value":"station","type":"house","name":"Main Street","street":"Main Bus Terminal","locality":"East End-Danforth","city":"Toronto","state":"Ontario","country":"Canada","postcode":"M4C 1L7","countrycode":"CA"},"geometry":{"type":"Point","coordinates":[-79.3016043,43.6890489]}}]}
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          -79.3015835,
+          43.6890547
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "city": "Toronto",
+        "country": "Canada",
+        "countrycode": "CA",
+        "locality": "East End-Danforth",
+        "name": "Main Street",
+        "osm_id": 10033986098,
+        "osm_key": "amenity",
+        "osm_type": "N",
+        "osm_value": "bus_station",
+        "postcode": "M4C 1L7",
+        "state": "Ontario",
+        "street": "Main Bus Terminal",
+        "type": "house"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -79.3016043,
+          43.6890489
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "city": "Toronto",
+        "country": "Canada",
+        "countrycode": "CA",
+        "locality": "East End-Danforth",
+        "name": "Main Street",
+        "osm_id": 5326541297,
+        "osm_key": "railway",
+        "osm_type": "N",
+        "osm_value": "station",
+        "postcode": "M4C 1L7",
+        "state": "Ontario",
+        "street": "Main Bus Terminal",
+        "type": "house"
+      },
+      "type": "Feature"
+    }
+  ],
+  "type": "FeatureCollection"
+}
