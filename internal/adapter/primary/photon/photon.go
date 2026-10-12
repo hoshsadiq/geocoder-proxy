@@ -4,6 +4,7 @@
 package photon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -17,6 +18,9 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
+
+// Compile-time guard.
+var _ http.Handler = (*Handler)(nil)
 
 // Handler serves the Photon API over a core geocoding service.
 type Handler struct {
@@ -41,15 +45,16 @@ func New(svc port.GeocodeService, regionNames display.Namer, logger *slog.Logger
 	return h
 }
 
-// ServeHTTP logs and dispatches the request. The log line carries the path
-// but never the query string, which holds coordinates and search text.
+// ServeHTTP logs and dispatches the request. The log line carries the
+// escaped path so a percent-encoded query string cannot smuggle
+// coordinates or search text into the log.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	h.mux.ServeHTTP(rw, r)
 	h.logger.InfoContext(r.Context(), "request",
 		"method", r.Method,
-		"path", r.URL.Path,
+		"path", r.URL.EscapedPath(),
 		"status", rw.status,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
@@ -65,6 +70,11 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// maxResultLimit caps the limit parameter. Photon's own servers cap
+// results, and an unbounded limit lets one request fill the cache with an
+// arbitrarily large answer set.
+const maxResultLimit = 50
+
 func (h *Handler) reverse(w http.ResponseWriter, r *http.Request) {
 	lat, errLat := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lon, errLon := strconv.ParseFloat(r.URL.Query().Get("lon"), 64)
@@ -77,7 +87,7 @@ func (h *Handler) reverse(w http.ResponseWriter, r *http.Request) {
 	q := domain.ReverseQuery{Coordinates: coords}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			q.Limit = n
+			q.Limit = min(n, maxResultLimit)
 		}
 	}
 	if v := r.URL.Query().Get("radius"); v != "" {
@@ -99,7 +109,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			q.Limit = n
+			q.Limit = min(n, maxResultLimit)
 		}
 	}
 
@@ -107,21 +117,31 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, r, results, err)
 }
 
-// respond maps the core outcome onto the wire: a genuine empty is a 200
-// with an empty FeatureCollection; a provider failure is a 503, the status
-// the geocoder gem Dawarich uses raises as transient (a JSON 502 would be
-// parsed into the empty answer and marked final — the failure this service
-// exists to prevent).
+// respond maps the core outcome onto the wire. The failure status is
+// always one the geocoder gem Dawarich uses raises as transient
+// (400/401/402/429/503): any other status with a JSON body parses into an
+// empty answer, which Dawarich marks final and never retries — the failure
+// this service exists to prevent. A genuine empty is a 200 with an empty
+// FeatureCollection.
 func (h *Handler) respond(w http.ResponseWriter, r *http.Request, results []domain.Result, err error) {
 	if err != nil {
 		switch {
-		case errors.Is(err, domain.ErrAllProvidersFailed), errors.Is(err, domain.ErrNoProviders):
-			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
-		case errors.Is(err, domain.ErrInvalidQuery):
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// The caller is gone; writing a status nobody reads only adds a
+			// scary log line. Debug, not error.
+			h.logger.DebugContext(r.Context(), "client gone before answer", "error", err)
+			return
+		case errors.Is(err, domain.ErrInvalidQuery), errors.Is(err, domain.ErrInvalidCoordinates):
 			writeError(w, http.StatusBadRequest, "invalid query")
+		case errors.Is(err, domain.ErrAllProvidersFailed), errors.Is(err, domain.ErrNoProviders):
+			// Provider error text is coordinate-free by contract, so it is
+			// safe to log.
+			h.logger.WarnContext(r.Context(), "all providers failed", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
 		default:
+			// Unknown failure: still 503, never a non-raising status.
 			h.logger.ErrorContext(r.Context(), "lookup failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
 		}
 		return
 	}
@@ -140,8 +160,12 @@ func (h *Handler) toFeature(r domain.Result) feature {
 	country := r.Address.Country
 	if code := r.Address.CountryCode; code != "" && h.regions != nil {
 		// Providers localise country names; the code is stable, so the
-		// canonical English name comes from the code.
-		if region, err := language.ParseRegion(code); err == nil {
+		// English name comes from the code. Dawarich resolves countries by
+		// exact name against its own seed, which CLDR disagrees with for 28
+		// codes; those take the Dawarich name verbatim.
+		if name, ok := dawarichCountryNames[code]; ok {
+			country = name
+		} else if region, err := language.ParseRegion(code); err == nil {
 			if name := h.regions.Name(region); name != "" {
 				country = name
 			}
@@ -174,8 +198,9 @@ func (h *Handler) toFeature(r domain.Result) feature {
 	}
 }
 
-// featureCollection is the Photon wire shape. Property fields are emitted
-// even when empty, matching Photon's own responses.
+// featureCollection is the Photon wire shape. Absent properties are
+// omitted, matching Photon's own responses (and mattering for Ruby
+// consumers, where an empty string is truthy).
 type featureCollection struct {
 	Type     string    `json:"type"`
 	Features []feature `json:"features"`
@@ -193,18 +218,18 @@ type geometry struct {
 }
 
 type properties struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Street      string `json:"street"`
-	HouseNumber string `json:"housenumber"`
-	Postcode    string `json:"postcode"`
-	City        string `json:"city"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Street      string `json:"street,omitempty"`
+	HouseNumber string `json:"housenumber,omitempty"`
+	Postcode    string `json:"postcode,omitempty"`
+	City        string `json:"city,omitempty"`
 	Locality    string `json:"locality,omitempty"`
 	District    string `json:"district,omitempty"`
 	County      string `json:"county,omitempty"`
 	State       string `json:"state,omitempty"`
-	Country     string `json:"country"`
-	CountryCode string `json:"countrycode"`
+	Country     string `json:"country,omitempty"`
+	CountryCode string `json:"countrycode,omitempty"`
 	OsmID       int64  `json:"osm_id,omitempty"`
 	OsmType     string `json:"osm_type,omitempty"`
 	OsmKey      string `json:"osm_key,omitempty"`

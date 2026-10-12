@@ -98,3 +98,20 @@ func TestInvalidTTLError(t *testing.T) {
 	must.Error(err)
 	must.ErrorContains(err, "cache.ttl")
 }
+
+func TestUnknownKeyIsAnError(t *testing.T) {
+	must := require.New(t)
+	path := writeYAML(t, "cache:\n  max_entires: 500\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	_, err := Load(path, nil)
+	must.Error(err, "a typo'd key must fail startup, not be silently ignored")
+	must.ErrorContains(err, "max_entires")
+}
+
+func TestEnvNumbersRejectTrailingGarbage(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("GEOCODER_PROVIDERS", "chibigeo")
+	t.Setenv("GEOCODER_PROVIDER_CHIBIGEO_RATE_PER_SECOND", "1.5abc")
+	_, err := Load("", nil)
+	must.Error(err)
+	must.ErrorContains(err, "RATE_PER_SECOND")
+}

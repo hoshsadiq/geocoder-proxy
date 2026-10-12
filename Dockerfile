@@ -29,6 +29,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /app/geocoder-proxy /geocoder-proxy
 
 USER 65534
-EXPOSE 8080
+EXPOSE 8080 9090
 
 ENTRYPOINT ["/geocoder-proxy"]
+CMD ["serve"]

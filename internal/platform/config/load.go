@@ -3,9 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/env"
@@ -78,7 +80,15 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 	}
 
 	var r raw
-	if err := k.Unmarshal("", &r); err != nil {
+	if err := k.UnmarshalWithConf("", &r, koanf.UnmarshalConf{
+		DecoderConfig: &mapstructure.DecoderConfig{
+			// Unknown keys are typos the operator meant to have an effect;
+			// they fail startup instead of being silently ignored.
+			ErrorUnused:      true,
+			Result:           &r,
+			WeaklyTypedInput: true,
+		},
+	}); err != nil {
 		return Config{}, fmt.Errorf("parsing configuration: %w", err)
 	}
 
@@ -135,14 +145,18 @@ func mergeProviders(fromFile []Provider) ([]Provider, error) {
 		applyEnvString(&p.APIKey, prefix+"API_KEY")
 		applyEnvString(&p.UserAgent, prefix+"USER_AGENT")
 		if v, ok := os.LookupEnv(prefix + "RATE_PER_SECOND"); ok {
-			if _, err := fmt.Sscanf(v, "%f", &p.RatePerSecond); err != nil {
+			rate, err := strconv.ParseFloat(v, 64)
+			if err != nil {
 				return nil, fmt.Errorf("%s: %q is not a number", prefix+"RATE_PER_SECOND", v)
 			}
+			p.RatePerSecond = rate
 		}
 		if v, ok := os.LookupEnv(prefix + "DAILY_QUOTA"); ok {
-			if _, err := fmt.Sscanf(v, "%d", &p.DailyQuota); err != nil {
+			quota, err := strconv.Atoi(v)
+			if err != nil {
 				return nil, fmt.Errorf("%s: %q is not a number", prefix+"DAILY_QUOTA", v)
 			}
+			p.DailyQuota = quota
 		}
 		providers = append(providers, p)
 	}

@@ -1,11 +1,14 @@
 # geocoder-proxy example configuration.
 #
-# Precedence: flags > environment (GEOCODER_*) > this file > defaults.
-# Flat settings have env equivalents (GEOCODER_LISTEN_ADDR, GEOCODER_CACHE_TTL,
-# GEOCODER_CACHE_MAX_ENTRIES, GEOCODER_CACHE_MAX_REUSE_DISTANCE).
+# Precedence: environment (GEOCODER_*) > this file > defaults.
+# --config or GEOCODER_CONFIG selects the file.
+# Flat settings have env equivalents: GEOCODER_LISTEN_ADDR, GEOCODER_OPS_ADDR,
+# GEOCODER_CACHE_TTL, GEOCODER_CACHE_MAX_ENTRIES,
+# GEOCODER_CACHE_MAX_REUSE_DISTANCE.
 # GEOCODER_PROVIDERS selects and orders providers by name;
 # GEOCODER_PROVIDER_<NAME>_<FIELD> overrides each provider's settings
 # (BASE_URL, API_KEY, USER_AGENT, RATE_PER_SECOND, DAILY_QUOTA).
+# Keys are validated: unknown keys and invalid values fail startup.
 
 listen_addr: ":8080"
 ops_addr: ":9090"

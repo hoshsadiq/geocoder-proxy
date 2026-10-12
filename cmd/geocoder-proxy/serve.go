@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,7 +63,11 @@ func serve(ctx context.Context, configPath string) error {
 	reg := prom.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector())
 	metrics := metricsadp.New(reg)
-	cache := memory.New(cfg.Cache.TTL, memory.WithMaxEntries(cfg.Cache.MaxEntries))
+	var cacheOpts []memory.Option
+	if cfg.Cache.MaxEntries > 0 {
+		cacheOpts = append(cacheOpts, memory.WithMaxEntries(cfg.Cache.MaxEntries))
+	}
+	cache := memory.New(cfg.Cache.TTL, cacheOpts...)
 
 	providers := make([]service.Provider, 0, len(cfg.Providers))
 	for _, p := range cfg.Providers {
@@ -87,18 +93,42 @@ func serve(ctx context.Context, configPath string) error {
 	router := service.New(cache, metrics, providers, service.WithMaxReuseDistance(cfg.Cache.MaxReuseDistance))
 	handler := photonprimary.New(router, display.English.Regions(), logger)
 
-	app := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
-	opsSrv := &http.Server{Addr: cfg.OpsAddr, Handler: ops.New(reg), ReadHeaderTimeout: 10 * time.Second}
+	// Bind before announcing anything: a listener that fails to bind fails
+	// the startup with no "listening" lie and no half-open sibling.
+	var lc net.ListenConfig
+	appLn, err := lc.Listen(ctx, "tcp", cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("binding %s: %w", cfg.ListenAddr, err)
+	}
+	opsLn, err := lc.Listen(ctx, "tcp", cfg.OpsAddr)
+	if err != nil {
+		_ = appLn.Close()
+		return fmt.Errorf("binding %s: %w", cfg.OpsAddr, err)
+	}
+
+	var draining atomic.Bool
+	app := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	opsSrv := &http.Server{
+		Handler:           ops.New(reg, &draining),
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- app.ListenAndServe() }()
-	go func() { errCh <- opsSrv.ListenAndServe() }()
+	go func() { errCh <- app.Serve(appLn) }()
+	go func() { errCh <- opsSrv.Serve(opsLn) }()
 
 	names := make([]string, 0, len(providers))
 	for _, p := range providers {
 		names = append(names, p.Geocoder.Name())
 	}
-	logger.Info("listening", "addr", cfg.ListenAddr, "ops_addr", cfg.OpsAddr, "providers", names)
+	logger.Info("listening", "addr", appLn.Addr().String(), "ops_addr", opsLn.Addr().String(), "providers", names)
 
 	select {
 	case <-ctx.Done():
@@ -109,6 +139,7 @@ func serve(ctx context.Context, configPath string) error {
 		}
 	}
 
+	draining.Store(true)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.Shutdown(shutdownCtx); err != nil {

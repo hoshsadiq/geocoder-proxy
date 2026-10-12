@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -25,7 +26,15 @@ func TestValidate(t *testing.T) {
 		{name: "no providers", mutate: func(c *Config) { c.Providers = nil }, wantErr: "at least one provider"},
 		{name: "empty listen addr", mutate: func(c *Config) { c.ListenAddr = "" }, wantErr: "listen address"},
 		{name: "zero reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = 0 }, wantErr: "max_reuse_distance"},
-		{name: "zero rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = 0 }, wantErr: "rate_per_second must be positive"},
+		{name: "zero rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = 0 }, wantErr: "rate_per_second"},
+		{name: "NaN rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = math.NaN() }, wantErr: "rate_per_second"},
+		{name: "infinite rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = math.Inf(1) }, wantErr: "rate_per_second"},
+		{name: "NaN reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = math.NaN() }, wantErr: "max_reuse_distance"},
+		{name: "negative ttl", mutate: func(c *Config) { c.Cache.TTL = -time.Hour }, wantErr: "cache.ttl"},
+		{name: "negative max entries", mutate: func(c *Config) { c.Cache.MaxEntries = -5 }, wantErr: "max_entries"},
+		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, c.Providers[0]) }, wantErr: "more than once"},
+		{name: "invalid base url", mutate: func(c *Config) { c.Providers[0].BaseURL = "not a url" }, wantErr: "base_url"},
+		{name: "same listen and ops", mutate: func(c *Config) { c.OpsAddr = c.ListenAddr }, wantErr: "must differ"},
 		{name: "negative quota", mutate: func(c *Config) { c.Providers[0].DailyQuota = -1 }, wantErr: "daily_quota"},
 		{name: "nominatim without user agent", mutate: func(c *Config) { c.Providers[0].Name = "nominatim" }, wantErr: "user_agent"},
 		{name: "geoapify without key", mutate: func(c *Config) { c.Providers[0].Name = "geoapify" }, wantErr: "api_key"},
