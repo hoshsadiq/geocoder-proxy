@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -12,6 +13,15 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
+
+type stubConfig struct {
+	rate  float64
+	quota int
+}
+
+func (c *stubConfig) Validate() error { return ValidateLimits(c.rate, c.quota) }
+func (c *stubConfig) Rate() float64   { return c.rate }
+func (c *stubConfig) Quota() int      { return c.quota }
 
 type stubGeocoder struct{ name string }
 
@@ -35,17 +45,23 @@ func uniqueName(base string) string {
 	return fmt.Sprintf("%s-%d", base, testNameCounter.Add(1))
 }
 
+func stubRegistration(name string) Registration {
+	return Registration{
+		NewConfig: func() Config { return &stubConfig{rate: 1} },
+		Build:     func(Config) (port.Geocoder, error) { return stubGeocoder{name}, nil },
+	}
+}
+
 func TestRegisterAndLookup(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	name := uniqueName("stub")
-	factory := func(Config) (port.Geocoder, error) { return stubGeocoder{name}, nil }
+	Register(name, stubRegistration(name))
 
-	Register(name, factory)
-	f, ok := Lookup(name)
+	r, ok := Lookup(name)
 	must.True(ok)
-	g, err := f(Config{})
+	g, err := r.Build(r.NewConfig())
 	must.NoError(err)
-	is.Equal(name, g.Name())
+	is.Equal(name, g.Name(), "Lookup must return the registration made under this name")
 
 	_, ok = Lookup("missing")
 	is.False(ok)
@@ -55,11 +71,39 @@ func TestRegisterAndLookup(t *testing.T) {
 func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	require.Panics(t, func() {
 		name := uniqueName("dup")
-		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"a"}, nil })
-		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"b"}, nil })
+		Register(name, stubRegistration(name))
+		Register(name, stubRegistration(name))
 	})
 }
 
-func TestRegisterPanicsOnNil(t *testing.T) {
-	require.Panics(t, func() { Register(uniqueName("nilfactory"), nil) })
+func TestRegisterPanicsOnIncomplete(t *testing.T) {
+	require.Panics(t, func() { Register(uniqueName("nilnew"), Registration{}) })
+	require.Panics(t, func() {
+		Register(uniqueName("nilbuild"), Registration{NewConfig: func() Config { return &stubConfig{rate: 1} }})
+	})
+}
+
+func TestValidateLimits(t *testing.T) {
+	must := require.New(t)
+	must.NoError(ValidateLimits(1, 0))
+	must.NoError(ValidateLimits(0.5, 100))
+	must.Error(ValidateLimits(0, 0))
+	must.Error(ValidateLimits(-1, 0))
+	must.Error(ValidateLimits(1, -1))
+	must.Error(ValidateLimits(2.5, -2))
+	must.Error(ValidateLimits(math.NaN(), 0))
+	must.Error(ValidateLimits(math.Inf(1), 0))
+}
+
+func TestValidateBaseURL(t *testing.T) {
+	must := require.New(t)
+	must.NoError(ValidateBaseURL(""))
+	must.NoError(ValidateBaseURL("https://app.chibigeo.com/v1/photon"))
+	must.NoError(ValidateBaseURL("http://localhost:2322"))
+	must.Error(ValidateBaseURL("not a url"))
+	must.Error(ValidateBaseURL("ftp://example.com"))
+	must.Error(ValidateBaseURL("http://"))
+	must.Error(ValidateBaseURL("https://user:pass@example.com"), "credentials must not ride the URL")
+	must.Error(ValidateBaseURL("http://example.com?x=1"))
+	must.Error(ValidateBaseURL("http://example.com#frag"))
 }

@@ -9,6 +9,8 @@ package photon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,10 +34,44 @@ const (
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
-	registry.Register(providerName, func(cfg registry.Config) (port.Geocoder, error) {
-		return New(cfg)
+	registry.Register(providerName, registry.Registration{
+		NewConfig: func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) {
+			cfg, ok := c.(*Config)
+			if !ok || cfg == nil {
+				return nil, fmt.Errorf("%s: unexpected config type %T", providerName, c)
+			}
+			return New(cfg)
+		},
 	})
 }
+
+// Config is this provider's configuration, registered as "chibigeo" (the
+// provider it fronts by default; the type is Photon-shaped because any
+// Photon-compatible upstream can serve it). It is decoded from operator
+// config (koanf tags) and validated before use; unknown keys are rejected
+// at load time. It carries a credential: never log or serialise it.
+type Config struct {
+	BaseURL       string  `koanf:"base_url"`
+	APIKey        string  `koanf:"api_key"`
+	RatePerSecond float64 `koanf:"rate_per_second"`
+	DailyQuota    int     `koanf:"daily_quota"`
+}
+
+// Validate checks the provider's own requirements. Photon-shaped upstreams
+// need no credentials (the API key is optional, for ChibiGeo).
+func (c *Config) Validate() error {
+	return errors.Join(
+		registry.ValidateLimits(c.RatePerSecond, c.DailyQuota),
+		registry.ValidateBaseURL(c.BaseURL),
+	)
+}
+
+// Rate is the configured requests-per-second pacing.
+func (c *Config) Rate() float64 { return c.RatePerSecond }
+
+// Quota is the configured daily call cap; zero means unlimited.
+func (c *Config) Quota() int { return c.DailyQuota }
 
 // Client calls a Photon-shaped upstream.
 type Client struct {
@@ -57,7 +93,10 @@ func WithHTTPClient(c *http.Client) Option {
 // New builds the client. An empty BaseURL uses the provider's public
 // endpoint. An API key is sent as the X-Api-Key header (ChibiGeo's
 // documented auth); empty means unauthenticated (komoot, most self-hosts).
-func New(cfg registry.Config, opts ...Option) (*Client, error) {
+func New(cfg *Config, opts ...Option) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", providerName, err)
+	}
 	c := &Client{
 		name:   providerName,
 		base:   strings.TrimSuffix(cfg.BaseURL, "/"),

@@ -29,10 +29,46 @@ const (
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
-	registry.Register(providerName, func(cfg registry.Config) (port.Geocoder, error) {
-		return New(cfg)
+	registry.Register(providerName, registry.Registration{
+		NewConfig: func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) {
+			cfg, ok := c.(*Config)
+			if !ok || cfg == nil {
+				return nil, fmt.Errorf("%s: unexpected config type %T", providerName, c)
+			}
+			return New(cfg)
+		},
 	})
 }
+
+// Config is this provider's configuration. It is decoded from operator
+// config (koanf tags) and validated before use; unknown keys are rejected
+// at load time. It carries a credential: never log or serialise it. The API key is sent as the apiKey query parameter and is required.
+type Config struct {
+	BaseURL       string  `koanf:"base_url"`
+	APIKey        string  `koanf:"api_key"`
+	RatePerSecond float64 `koanf:"rate_per_second"`
+	DailyQuota    int     `koanf:"daily_quota"`
+}
+
+// Validate checks the provider's own requirements.
+func (c *Config) Validate() error {
+	var missing error
+	if c.APIKey == "" {
+		missing = errors.New("api_key is required")
+	}
+	return errors.Join(
+		missing,
+		registry.ValidateLimits(c.RatePerSecond, c.DailyQuota),
+		registry.ValidateBaseURL(c.BaseURL),
+	)
+}
+
+// Rate is the configured requests-per-second pacing.
+func (c *Config) Rate() float64 { return c.RatePerSecond }
+
+// Quota is the configured daily call cap; zero means unlimited.
+func (c *Config) Quota() int { return c.DailyQuota }
 
 // Client calls the Geoapify Geocoding API.
 type Client struct {
@@ -54,9 +90,9 @@ func WithHTTPClient(c *http.Client) Option {
 // New builds the client. The API key is sent as the apiKey query parameter
 // (Geoapify's documented auth) and is required. An empty BaseURL uses the
 // public endpoint.
-func New(cfg registry.Config, opts ...Option) (*Client, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("%s: APIKey is required", providerName)
+func New(cfg *Config, opts ...Option) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", providerName, err)
 	}
 	c := &Client{
 		name:   providerName,

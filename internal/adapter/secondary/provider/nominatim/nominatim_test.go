@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/registry"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
@@ -28,7 +27,7 @@ func serve(t *testing.T, fixture string, handlerCheck func(*http.Request)) *http
 
 func newTestClient(t *testing.T, base string) *Client {
 	t.Helper()
-	c, err := New(registry.Config{BaseURL: base, UserAgent: "geocoder-proxy-test"})
+	c, err := New(&Config{BaseURL: base, UserAgent: "geocoder-proxy-test", RatePerSecond: 1})
 	require.NoError(t, err)
 	return c
 }
@@ -118,7 +117,7 @@ func TestAPIKeySentWhenConfigured(t *testing.T) {
 	})
 	defer srv.Close()
 
-	c, err := New(registry.Config{BaseURL: srv.URL, UserAgent: "ua", APIKey: "hosted-key"})
+	c, err := New(&Config{BaseURL: srv.URL, UserAgent: "ua", APIKey: "hosted-key", RatePerSecond: 1})
 	must.NoError(err)
 	_, err = c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
 	must.NoError(err)
@@ -169,9 +168,9 @@ func TestForwardErrorBodyClassification(t *testing.T) {
 
 func TestUserAgentRequired(t *testing.T) {
 	must := require.New(t)
-	_, err := New(registry.Config{})
+	_, err := New(&Config{})
 	must.Error(err)
-	must.ErrorContains(err, "UserAgent")
+	must.ErrorContains(err, "user_agent")
 }
 
 func TestUpstreamErrorIsCoordinateFree(t *testing.T) {
