@@ -12,8 +12,14 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"reflect"
 	"slices"
+	"strconv"
 	"sync"
+
+	mapstructure "github.com/go-viper/mapstructure/v2"
+	"github.com/knadh/koanf/providers/confmap"
+	"github.com/knadh/koanf/v2"
 
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
@@ -114,4 +120,52 @@ func ValidateBaseURL(raw string) error {
 		return errors.New("base_url must not carry a query or fragment")
 	}
 	return nil
+}
+
+// Decode unmarshals operator settings into cfg: unknown keys are rejected
+// (a typo must fail startup, not be ignored), string values are coerced
+// (the environment layer produces strings), and a non-integral number is
+// refused rather than truncated — a fractional daily_quota would otherwise
+// silently become a different budget than the operator wrote.
+func Decode(cfg Config, settings map[string]any) error {
+	k := koanf.New(".")
+	// A static confmap cannot fail to load.
+	_ = k.Load(confmap.Provider(settings, "."), nil)
+	return k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
+		DecoderConfig: &mapstructure.DecoderConfig{
+			ErrorUnused:      true,
+			Result:           cfg,
+			WeaklyTypedInput: true,
+			DecodeHook:       integralNumber(),
+		},
+	})
+}
+
+// integralNumber coerces an integral number (float or string) into the int
+// field it targets, and refuses a fractional one.
+func integralNumber() mapstructure.DecodeHookFunc {
+	return func(f, t reflect.Value) (any, error) {
+		if t.Kind() != reflect.Int && t.Kind() != reflect.Int64 {
+			return f.Interface(), nil
+		}
+		var value float64
+		switch f.Kind() {
+		case reflect.Float64:
+			value = f.Float()
+		case reflect.String:
+			// A non-numeric string is not this hook's business: the
+			// standard coercion decides (and usually rejects) it.
+			if v, err := strconv.ParseFloat(f.String(), 64); err == nil {
+				value = v
+			} else {
+				return f.Interface(), nil
+			}
+		default:
+			return f.Interface(), nil
+		}
+		if value != math.Trunc(value) {
+			return nil, fmt.Errorf("value %v is not a whole number", value)
+		}
+		return int64(value), nil
+	}
 }

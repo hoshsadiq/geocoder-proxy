@@ -1,0 +1,41 @@
+# geocoder-proxy example configuration.
+#
+# Precedence: environment (GEOCODER_*) > this file > defaults.
+# --config or GEOCODER_CONFIG selects the file.
+# Flat settings have env equivalents: GEOCODER_LISTEN_ADDR, GEOCODER_OPS_ADDR,
+# GEOCODER_CACHE_TTL, GEOCODER_CACHE_MAX_ENTRIES,
+# GEOCODER_CACHE_MAX_REUSE_DISTANCE.
+# GEOCODER_PROVIDERS selects and orders providers by name;
+# GEOCODER_PROVIDER_<NAME>_<FIELD> overrides each provider's settings
+# (BASE_URL, API_KEY, USER_AGENT, RATE_PER_SECOND, DAILY_QUOTA).
+# Keys are validated: unknown keys and invalid values fail startup.
+
+listen_addr: ":8080"
+ops_addr: ":9090"
+
+cache:
+  ttl: 720h
+  max_entries: 100000
+  # How close a request must be to a house-numbered answer's coordinates to
+  # reuse it, in metres.
+  max_reuse_distance: 25
+
+# Providers are tried in order. rate_per_second paces calls; daily_quota
+# caps them over a rolling 24-hour window (0 = unlimited).
+providers:
+  - name: chibigeo
+    # api_key: set GEOCODER_PROVIDER_CHIBIGEO_API_KEY, never in a committed file
+    rate_per_second: 1
+    daily_quota: 2500
+  - name: geoapify
+    # api_key: GEOCODER_PROVIDER_GEOAPIFY_API_KEY
+    rate_per_second: 5
+    daily_quota: 3000
+  - name: locationiq
+    # api_key: GEOCODER_PROVIDER_LOCATIONIQ_API_KEY
+    rate_per_second: 2
+    daily_quota: 5000
+  - name: nominatim
+    # The public instance's usage policy requires an identifying User-Agent.
+    user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
+    rate_per_second: 1

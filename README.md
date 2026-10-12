@@ -9,11 +9,22 @@ Photon-compatible API. Built for [Dawarich](https://github.com/Freika/dawarich):
 point `PHOTON_API_HOST` at it and imports stop paying one API call per
 location point.
 
-**Status: early development.** The core (domain, ports, router with
-cache/pacing/quota/failover) and the four provider adapters are in place.
-Next: config wiring and the Photon-compatible HTTP surface.
+## Running it
 
-## What it will do
+```bash
+geocoder-proxy serve --config config.yaml
+```
+
+Configuration layers: environment (`GEOCODER_*`) over a YAML file
+(`--config` or `GEOCODER_CONFIG`) over defaults. Provider API keys come
+from the environment (`GEOCODER_PROVIDER_<NAME>_API_KEY`), never from a
+committed file. See [config.example.yaml](config.example.yaml) for every
+key.
+
+The Photon API listens on `:8080` by default (`/reverse`, `/api`);
+health and Prometheus metrics live on `:9090` (`/healthz`, `/metrics`).
+
+## What it does
 
 - **Speaks Photon.** `GET /reverse` and `GET /api`, GeoJSON in the shape
   Dawarich already parses. No Dawarich change needed.

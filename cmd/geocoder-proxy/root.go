@@ -13,5 +13,6 @@ func newRootCmd(version, commit, date string) *zulu.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(newVersionCmd(version, commit, date))
+	root.AddCommand(newServeCmd())
 	return root
 }

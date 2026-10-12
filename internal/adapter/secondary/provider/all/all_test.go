@@ -5,9 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/knadh/koanf/providers/confmap"
-	"github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -89,18 +86,10 @@ func TestSharedRulesEnforced(t *testing.T) {
 	}
 }
 
-// decode unmarshals m into cfg with unknown keys rejected, mirroring the
-// config layer's decode: koanf, string values, strict keys.
+// decode mirrors the config layer's decode through the real registry
+// implementation, so the hook it uses is the one under test.
 func decode(t *testing.T, cfg registry.Config, m map[string]any) registry.Config {
 	t.Helper()
-	k := koanf.New(".")
-	require.NoError(t, k.Load(confmap.Provider(m, "."), nil))
-	require.NoError(t, k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
-		DecoderConfig: &mapstructure.DecoderConfig{
-			ErrorUnused:      true,
-			Result:           cfg,
-			WeaklyTypedInput: true,
-		},
-	}))
+	require.NoError(t, registry.Decode(cfg, m))
 	return cfg
 }

@@ -19,6 +19,17 @@ type stubConfig struct {
 	quota int
 }
 
+// stubFullConfig decodes daily_quota into a real field so the decode hook's
+// int target is exercised.
+type stubFullConfig struct {
+	DailyQuota int     `koanf:"daily_quota"`
+	RatePerSec float64 `koanf:"rate_per_second"`
+}
+
+func (c *stubFullConfig) Validate() error { return nil }
+func (c *stubFullConfig) Rate() float64   { return c.RatePerSec }
+func (c *stubFullConfig) Quota() int      { return c.DailyQuota }
+
 func (c *stubConfig) Validate() error { return ValidateLimits(c.rate, c.quota) }
 func (c *stubConfig) Rate() float64   { return c.rate }
 func (c *stubConfig) Quota() int      { return c.quota }
@@ -106,4 +117,46 @@ func TestValidateBaseURL(t *testing.T) {
 	must.Error(ValidateBaseURL("https://user:pass@example.com"), "credentials must not ride the URL")
 	must.Error(ValidateBaseURL("http://example.com?x=1"))
 	must.Error(ValidateBaseURL("http://example.com#frag"))
+}
+
+func TestDecodeIntegralNumbers(t *testing.T) {
+	must := require.New(t)
+
+	t.Run("yaml float integral is accepted", func(t *testing.T) {
+		c := &stubFullConfig{}
+		must.NoError(Decode(c, map[string]any{"daily_quota": 2.0}))
+		must.Equal(2, c.Quota())
+	})
+	t.Run("yaml float fractional is refused", func(t *testing.T) {
+		c := &stubFullConfig{}
+		err := Decode(c, map[string]any{"daily_quota": 1.5})
+		must.Error(err)
+		must.ErrorContains(err, "whole number")
+	})
+	t.Run("string integral is accepted", func(t *testing.T) {
+		c := &stubFullConfig{}
+		must.NoError(Decode(c, map[string]any{"daily_quota": "2"}))
+		must.Equal(2, c.Quota())
+	})
+	t.Run("string float integral is accepted", func(t *testing.T) {
+		c := &stubFullConfig{}
+		must.NoError(Decode(c, map[string]any{"daily_quota": "2.0"}))
+		must.Equal(2, c.Quota())
+	})
+	t.Run("string fractional is refused", func(t *testing.T) {
+		c := &stubFullConfig{}
+		err := Decode(c, map[string]any{"daily_quota": "1.5"})
+		must.Error(err)
+		must.ErrorContains(err, "whole number")
+	})
+	t.Run("trailing garbage is refused", func(t *testing.T) {
+		c := &stubFullConfig{}
+		must.Error(Decode(c, map[string]any{"daily_quota": "1.5abc"}))
+	})
+	t.Run("unknown key is refused", func(t *testing.T) {
+		c := &stubFullConfig{}
+		err := Decode(c, map[string]any{"quot": 1})
+		must.Error(err)
+		must.ErrorContains(err, "quot")
+	})
 }
