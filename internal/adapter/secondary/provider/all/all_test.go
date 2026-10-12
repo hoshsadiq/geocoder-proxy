@@ -1,6 +1,8 @@
 package all_test
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
@@ -50,22 +52,13 @@ var providerKeys = map[string]map[string]any{
 // validation, the client identity, and the router limits all round-trip.
 func TestAllProvidersRegistered(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
-	must.Equal([]string{"chibigeo", "geoapify", "locationiq", "nominatim"}, registry.Names())
+	must.Equal(slices.Sorted(maps.Keys(providerKeys)), registry.Names())
 
 	for name, keys := range providerKeys {
 		reg, ok := registry.Lookup(name)
 		must.True(ok, "provider %q not registered", name)
 
-		cfg := reg.NewConfig()
-		k := koanf.New(".")
-		must.NoError(k.Load(confmap.Provider(keys, "."), nil))
-		must.NoError(k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
-			DecoderConfig: &mapstructure.DecoderConfig{
-				ErrorUnused:      true,
-				Result:           cfg,
-				WeaklyTypedInput: true,
-			},
-		}), "provider %q: its documented keys must decode strictly", name)
+		cfg := decode(t, reg.NewConfig(), keys)
 		must.NoError(cfg.Validate(), "provider %q: a complete config must validate", name)
 
 		client, err := reg.Build(cfg)
@@ -76,27 +69,38 @@ func TestAllProvidersRegistered(t *testing.T) {
 
 // Every registered provider must reject an invalid rate and an invalid
 // base URL: the shared rules are opt-in per provider, so this is the guard
-// that a new provider cannot silently skip them.
+// that a new provider cannot silently skip them. Each case decodes a
+// complete valid config and then breaks exactly one key, so the error can
+// only come from the rule under test.
 func TestSharedRulesEnforced(t *testing.T) {
 	must := require.New(t)
-	for _, name := range registry.Names() {
+	for name, keys := range providerKeys {
 		reg, _ := registry.Lookup(name)
-		cfg := reg.NewConfig()
-		decode := func(m map[string]any) {
-			k := koanf.New(".")
-			must.NoError(k.Load(confmap.Provider(m, "."), nil))
-			_ = k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
-				DecoderConfig: &mapstructure.DecoderConfig{
-					Result:           cfg,
-					WeaklyTypedInput: true,
-				},
-			})
-		}
 
-		decode(map[string]any{"rate_per_second": "0"})
-		must.Error(cfg.Validate(), "provider %q must reject a zero rate", name)
+		badRate := maps.Clone(keys)
+		badRate["rate_per_second"] = "0"
+		must.Error(decode(t, reg.NewConfig(), badRate).Validate(),
+			"provider %q must reject a zero rate", name)
 
-		decode(map[string]any{"rate_per_second": "1", "base_url": "not a url"})
-		must.Error(cfg.Validate(), "provider %q must reject an invalid base_url", name)
+		badURL := maps.Clone(keys)
+		badURL["base_url"] = "not a url"
+		must.Error(decode(t, reg.NewConfig(), badURL).Validate(),
+			"provider %q must reject an invalid base_url", name)
 	}
+}
+
+// decode unmarshals m into cfg with unknown keys rejected, mirroring the
+// config layer's decode: koanf, string values, strict keys.
+func decode(t *testing.T, cfg registry.Config, m map[string]any) registry.Config {
+	t.Helper()
+	k := koanf.New(".")
+	require.NoError(t, k.Load(confmap.Provider(m, "."), nil))
+	require.NoError(t, k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
+		DecoderConfig: &mapstructure.DecoderConfig{
+			ErrorUnused:      true,
+			Result:           cfg,
+			WeaklyTypedInput: true,
+		},
+	}))
+	return cfg
 }
