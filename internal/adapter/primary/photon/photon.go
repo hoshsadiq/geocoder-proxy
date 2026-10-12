@@ -124,22 +124,22 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request) {
 // FeatureCollection.
 func (h *Handler) respond(w http.ResponseWriter, r *http.Request, results []domain.Result, err error) {
 	if err != nil {
-		// Only the request's own context says "client gone": a provider's
-		// HTTP timeout wraps context.DeadlineExceeded into the error chain
-		// too, and that shape is an upstream failure (503), not a departed
-		// caller.
-		if r.Context().Err() != nil {
-			h.logger.DebugContext(r.Context(), "client gone before answer", "error", r.Context().Err())
-			return
-		}
+		// Provider failure outranks the cancellation check: a provider's
+		// HTTP timeout wraps context.DeadlineExceeded into the chain too,
+		// and a future in-process request deadline must never turn that
+		// shape into an empty 200.
 		switch {
-		case errors.Is(err, domain.ErrInvalidQuery), errors.Is(err, domain.ErrInvalidCoordinates):
-			writeError(w, http.StatusBadRequest, "invalid query")
 		case errors.Is(err, domain.ErrAllProvidersFailed), errors.Is(err, domain.ErrNoProviders):
 			// Provider error text is coordinate-free by contract, so it is
 			// safe to log.
 			h.logger.WarnContext(r.Context(), "all providers failed", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
+		case r.Context().Err() != nil:
+			// The caller is gone; writing a status nobody reads only adds a
+			// scary log line. Debug, not error.
+			h.logger.DebugContext(r.Context(), "client gone before answer", "error", r.Context().Err())
+		case errors.Is(err, domain.ErrInvalidQuery), errors.Is(err, domain.ErrInvalidCoordinates):
+			writeError(w, http.StatusBadRequest, "invalid query")
 		default:
 			// Unknown failure: still 503, never a non-raising status.
 			h.logger.ErrorContext(r.Context(), "lookup failed", "error", err)
