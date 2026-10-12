@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/registry"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
@@ -28,7 +27,7 @@ func serve(t *testing.T, fixture string, handlerCheck func(*http.Request)) *http
 
 func newTestClient(t *testing.T, base, key string) *Client {
 	t.Helper()
-	c, err := New(registry.Config{BaseURL: base, APIKey: key})
+	c, err := New(&Config{BaseURL: base, APIKey: key, RatePerSecond: 1})
 	require.NoError(t, err)
 	return c
 }

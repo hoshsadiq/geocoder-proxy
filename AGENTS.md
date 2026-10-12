@@ -43,11 +43,18 @@ The core (`internal/core/`) is technology-agnostic geocoding: domain types, port
 
 ### Adding a provider
 
-One new package under `internal/adapter/secondary/provider/<name>/` that implements `port.Geocoder`, translates the provider's response into `domain` types, and self-registers:
+One new package under `internal/adapter/secondary/provider/<name>/` that implements `port.Geocoder`, translates the provider's response into `domain` types, owns its configuration type and validation, and self-registers:
 
 ```go
-func init() { registry.Register("<name>", func(cfg registry.Config) (port.Geocoder, error) { return New(cfg) }) }
+func init() {
+ registry.Register("<name>", registry.Registration{
+  New:   func() registry.Config { return &Config{} },
+  Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
+ })
+}
 ```
+
+A provider is fully self-contained: its `Config` struct (mapstructure tags), its `Validate()`, and its construction live in its own package. No other package names a provider's fields; the composition root decodes operator config into the registered type, so a new field on an existing provider (or a whole new provider) changes nothing outside its package.
 
 Then add one blank import to `internal/adapter/secondary/provider/all/`. This is the only place `init()` is acceptable: provider registration follows the `database/sql` driver idiom, and the `all` package makes the side effects visible in a single import block. Everywhere else, use explicit constructors.
 

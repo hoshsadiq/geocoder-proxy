@@ -35,10 +35,39 @@ const (
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
-	registry.Register(providerName, func(cfg registry.Config) (port.Geocoder, error) {
-		return New(cfg)
+	registry.Register(providerName, registry.Registration{
+		New:   func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
 	})
 }
+
+// Config is this provider's configuration. It is decoded from operator
+// config (mapstructure) and validated before use; unknown keys are
+// rejected at load time. Nominatim requires an identifying User-Agent (its usage policy blocks unidentified clients); the API key is only for hosted instances that require one.
+type Config struct {
+	BaseURL       string  `mapstructure:"base_url"`
+	APIKey        string  `mapstructure:"api_key"`
+	UserAgent     string  `mapstructure:"user_agent"`
+	RatePerSecond float64 `mapstructure:"rate_per_second"`
+	DailyQuota    int     `mapstructure:"daily_quota"`
+}
+
+// Validate checks the provider's own requirements.
+func (c *Config) Validate() error {
+	if c.UserAgent == "" {
+		return errors.New("user_agent is required by the Nominatim usage policy")
+	}
+	if err := registry.ValidateLimits(c.RatePerSecond, c.DailyQuota); err != nil {
+		return err
+	}
+	return registry.ValidateBaseURL(c.BaseURL)
+}
+
+// Rate is the configured requests-per-second pacing.
+func (c *Config) Rate() float64 { return c.RatePerSecond }
+
+// Quota is the configured daily call cap; zero means unlimited.
+func (c *Config) Quota() int { return c.DailyQuota }
 
 // Client calls a Nominatim-shaped upstream.
 type Client struct {
@@ -62,9 +91,9 @@ func WithHTTPClient(c *http.Client) Option {
 // provider and is required: the public Nominatim usage policy blocks
 // unidentified clients. An empty BaseURL uses the public endpoint. APIKey
 // is sent as the key query parameter for hosted instances that require one.
-func New(cfg registry.Config, opts ...Option) (*Client, error) {
-	if cfg.UserAgent == "" {
-		return nil, fmt.Errorf("%s: UserAgent is required by the Nominatim usage policy", providerName)
+func New(cfg *Config, opts ...Option) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", providerName, err)
 	}
 	c := &Client{
 		name:      providerName,

@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/registry"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
@@ -32,7 +31,7 @@ func serve(t *testing.T, fixture string, handlerCheck func(*http.Request)) *http
 
 func newTestClient(t *testing.T, base string) *Client {
 	t.Helper()
-	c, err := New(registry.Config{BaseURL: base, APIKey: "test-key"})
+	c, err := New(&Config{BaseURL: base, APIKey: "test-key", RatePerSecond: 1})
 	require.NoError(t, err)
 	return c
 }
@@ -115,9 +114,9 @@ func TestEntryWithoutCoordinatesIsDropped(t *testing.T) {
 
 func TestAPIKeyRequired(t *testing.T) {
 	must := require.New(t)
-	_, err := New(registry.Config{})
+	_, err := New(&Config{})
 	must.Error(err)
-	must.ErrorContains(err, "APIKey")
+	must.ErrorContains(err, "api_key")
 }
 
 func TestUpstreamErrorIsCoordinateFree(t *testing.T) {

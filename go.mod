@@ -3,6 +3,7 @@ module github.com/hoshsadiq/geocoder-proxy
 go 1.27.2
 
 require (
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	github.com/zulucmd/zulu/v2 v2.0.0-20261002061629-386f10a646ed

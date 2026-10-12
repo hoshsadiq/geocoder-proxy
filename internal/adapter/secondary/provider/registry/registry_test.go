@@ -13,6 +13,15 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 )
 
+type stubConfig struct {
+	rate  float64
+	quota int
+}
+
+func (c *stubConfig) Validate() error { return ValidateLimits(c.rate, c.quota) }
+func (c *stubConfig) Rate() float64   { return c.rate }
+func (c *stubConfig) Quota() int      { return c.quota }
+
 type stubGeocoder struct{ name string }
 
 func (s stubGeocoder) Name() string { return s.name }
@@ -35,17 +44,23 @@ func uniqueName(base string) string {
 	return fmt.Sprintf("%s-%d", base, testNameCounter.Add(1))
 }
 
+func stubRegistration() Registration {
+	return Registration{
+		New:   func() Config { return &stubConfig{rate: 1} },
+		Build: func(Config) (port.Geocoder, error) { return stubGeocoder{"stub"}, nil },
+	}
+}
+
 func TestRegisterAndLookup(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	name := uniqueName("stub")
-	factory := func(Config) (port.Geocoder, error) { return stubGeocoder{name}, nil }
+	Register(name, stubRegistration())
 
-	Register(name, factory)
-	f, ok := Lookup(name)
+	r, ok := Lookup(name)
 	must.True(ok)
-	g, err := f(Config{})
+	g, err := r.Build(r.New())
 	must.NoError(err)
-	is.Equal(name, g.Name())
+	is.Equal("stub", g.Name())
 
 	_, ok = Lookup("missing")
 	is.False(ok)
@@ -55,11 +70,30 @@ func TestRegisterAndLookup(t *testing.T) {
 func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	require.Panics(t, func() {
 		name := uniqueName("dup")
-		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"a"}, nil })
-		Register(name, func(Config) (port.Geocoder, error) { return stubGeocoder{"b"}, nil })
+		Register(name, stubRegistration())
+		Register(name, stubRegistration())
 	})
 }
 
-func TestRegisterPanicsOnNil(t *testing.T) {
-	require.Panics(t, func() { Register(uniqueName("nilfactory"), nil) })
+func TestRegisterPanicsOnIncomplete(t *testing.T) {
+	require.Panics(t, func() { Register(uniqueName("nilnew"), Registration{}) })
+}
+
+func TestValidateLimits(t *testing.T) {
+	must := require.New(t)
+	must.NoError(ValidateLimits(1, 0))
+	must.NoError(ValidateLimits(0.5, 100))
+	must.Error(ValidateLimits(0, 0))
+	must.Error(ValidateLimits(-1, 0))
+	must.Error(ValidateLimits(1, -1))
+	must.Error(ValidateLimits(2.5, -2))
+}
+
+func TestValidateBaseURL(t *testing.T) {
+	must := require.New(t)
+	must.NoError(ValidateBaseURL(""))
+	must.NoError(ValidateBaseURL("https://app.chibigeo.com/v1/photon"))
+	must.NoError(ValidateBaseURL("http://localhost:2322"))
+	must.Error(ValidateBaseURL("not a url"))
+	must.Error(ValidateBaseURL("ftp://example.com"))
 }

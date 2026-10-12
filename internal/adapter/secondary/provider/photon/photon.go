@@ -9,6 +9,7 @@ package photon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,10 +33,36 @@ const (
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
-	registry.Register(providerName, func(cfg registry.Config) (port.Geocoder, error) {
-		return New(cfg)
+	registry.Register(providerName, registry.Registration{
+		New:   func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
 	})
 }
+
+// Config is this provider's configuration. It is decoded from operator
+// config (mapstructure) and validated before use; unknown keys are
+// rejected at load time.
+type Config struct {
+	BaseURL       string  `mapstructure:"base_url"`
+	APIKey        string  `mapstructure:"api_key"`
+	RatePerSecond float64 `mapstructure:"rate_per_second"`
+	DailyQuota    int     `mapstructure:"daily_quota"`
+}
+
+// Validate checks the provider's own requirements. Photon-shaped upstreams
+// need no credentials (the API key is optional, for ChibiGeo).
+func (c *Config) Validate() error {
+	if err := registry.ValidateLimits(c.RatePerSecond, c.DailyQuota); err != nil {
+		return err
+	}
+	return registry.ValidateBaseURL(c.BaseURL)
+}
+
+// Rate is the configured requests-per-second pacing.
+func (c *Config) Rate() float64 { return c.RatePerSecond }
+
+// Quota is the configured daily call cap; zero means unlimited.
+func (c *Config) Quota() int { return c.DailyQuota }
 
 // Client calls a Photon-shaped upstream.
 type Client struct {
@@ -57,7 +84,10 @@ func WithHTTPClient(c *http.Client) Option {
 // New builds the client. An empty BaseURL uses the provider's public
 // endpoint. An API key is sent as the X-Api-Key header (ChibiGeo's
 // documented auth); empty means unauthenticated (komoot, most self-hosts).
-func New(cfg registry.Config, opts ...Option) (*Client, error) {
+func New(cfg *Config, opts ...Option) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", providerName, err)
+	}
 	c := &Client{
 		name:   providerName,
 		base:   strings.TrimSuffix(cfg.BaseURL, "/"),

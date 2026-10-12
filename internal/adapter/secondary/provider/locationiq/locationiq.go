@@ -32,10 +32,38 @@ const (
 var _ port.Geocoder = (*Client)(nil)
 
 func init() {
-	registry.Register(providerName, func(cfg registry.Config) (port.Geocoder, error) {
-		return New(cfg)
+	registry.Register(providerName, registry.Registration{
+		New:   func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
 	})
 }
+
+// Config is this provider's configuration. It is decoded from operator
+// config (mapstructure) and validated before use; unknown keys are
+// rejected at load time. The API key is sent as the key query parameter and is required.
+type Config struct {
+	BaseURL       string  `mapstructure:"base_url"`
+	APIKey        string  `mapstructure:"api_key"`
+	RatePerSecond float64 `mapstructure:"rate_per_second"`
+	DailyQuota    int     `mapstructure:"daily_quota"`
+}
+
+// Validate checks the provider's own requirements.
+func (c *Config) Validate() error {
+	if c.APIKey == "" {
+		return errors.New("api_key is required")
+	}
+	if err := registry.ValidateLimits(c.RatePerSecond, c.DailyQuota); err != nil {
+		return err
+	}
+	return registry.ValidateBaseURL(c.BaseURL)
+}
+
+// Rate is the configured requests-per-second pacing.
+func (c *Config) Rate() float64 { return c.RatePerSecond }
+
+// Quota is the configured daily call cap; zero means unlimited.
+func (c *Config) Quota() int { return c.DailyQuota }
 
 // Client calls the LocationIQ API.
 type Client struct {
@@ -57,9 +85,9 @@ func WithHTTPClient(c *http.Client) Option {
 // New builds the client. The API key is sent as the key query parameter
 // (LocationIQ's documented auth) and is required. An empty BaseURL uses the
 // public endpoint.
-func New(cfg registry.Config, opts ...Option) (*Client, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("%s: APIKey is required", providerName)
+func New(cfg *Config, opts ...Option) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", providerName, err)
 	}
 	c := &Client{
 		name:   providerName,
