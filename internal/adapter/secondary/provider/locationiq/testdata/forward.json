@@ -1,0 +1,32 @@
+[
+  {
+    "address": {
+      "city": "New York",
+      "country": "United States",
+      "country_code": "us",
+      "county": "New York County",
+      "house_number": "350",
+      "name": "Empire State Building",
+      "postcode": "10001",
+      "road": "5th Avenue",
+      "state": "New York",
+      "suburb": "Manhattan Community Board 5"
+    },
+    "boundingbox": [
+      "40.7479255",
+      "40.7489585",
+      "-73.9865012",
+      "-73.9848166"
+    ],
+    "class": "tourism",
+    "display_name": "Empire State Building, 350, 5th Avenue, Manhattan Community Board 5, New York County, New York, 10001, United States",
+    "importance": 0.85,
+    "lat": "40.74844205",
+    "licence": "https://locationiq.com/attribution",
+    "lon": "-73.98565890160751",
+    "osm_id": "34633854",
+    "osm_type": "way",
+    "place_id": "218751965",
+    "type": "attraction"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "address": {
+    "city": "London",
+    "country": "United Kingdom",
+    "country_code": "gb",
+    "house_number": "221B",
+    "museum": "Sherlock Holmes Museum",
+    "postcode": "NW1 6XE",
+    "road": "Baker Street",
+    "state": "England",
+    "state_district": "Greater London",
+    "suburb": "Marylebone"
+  },
+  "addresstype": "museum",
+  "display_name": "Sherlock Holmes Museum, 221B, Baker Street, Marylebone, Westminster, Greater London, England, NW1 6XE, United Kingdom",
+  "lat": "51.5233879",
+  "licence": "https://locationiq.com/attribution",
+  "lon": "-0.1582276",
+  "name": "Sherlock Holmes Museum",
+  "osm_id": "5568763423",
+  "osm_type": "node",
+  "place_id": "60310287"
+}

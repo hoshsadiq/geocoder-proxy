@@ -24,10 +24,14 @@ type Address struct {
 	County      string
 	State       string
 	Country     string
+	// CountryCode is the ISO 3166-1 alpha-2 code, always uppercase;
+	// adapters normalise providers that return lowercase (Nominatim,
+	// LocationIQ, Geoapify).
 	CountryCode string
 
-	// OSM identifiers of the matched feature. OsmType is the provider's raw
-	// value (Photon uses N/W/R); adapters must not translate it.
+	// OSM identifiers of the matched feature. OsmType is the canonical
+	// single-letter form (N, W, R); adapters normalise the provider's value
+	// (e.g. Nominatim's "way") into it.
 	OsmID    int64
 	OsmType  string
 	OsmKey   string

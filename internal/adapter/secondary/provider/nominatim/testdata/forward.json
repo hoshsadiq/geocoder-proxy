@@ -1,0 +1,69 @@
+[
+  {
+    "address": {
+      "ISO3166-2-lvl4": "CA-ON",
+      "building": "Main Street",
+      "city": "Toronto",
+      "city_block": "East End-Danforth",
+      "country": "Canada",
+      "country_code": "ca",
+      "house_number": "315",
+      "postcode": "M4C 1L3",
+      "quarter": "Beaches—East York",
+      "road": "Main Street",
+      "state": "Ontario"
+    },
+    "addresstype": "building",
+    "boundingbox": [
+      "43.6888372",
+      "43.6892734",
+      "-79.3020390",
+      "-79.3011391"
+    ],
+    "category": "building",
+    "display_name": "Main Street, 315, Main Street, East End-Danforth, Beaches—East York, Toronto, Ontario, M4C 1L3, Canada",
+    "importance": 0.40580843572923003,
+    "lat": "43.6890408",
+    "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+    "lon": "-79.3016211",
+    "name": "Main Street",
+    "osm_id": 28135191,
+    "osm_type": "way",
+    "place_id": 352538196,
+    "place_rank": 30,
+    "type": "train_station"
+  },
+  {
+    "address": {
+      "ISO3166-2-lvl4": "CA-ON",
+      "city": "Toronto",
+      "city_block": "East End-Danforth",
+      "country": "Canada",
+      "country_code": "ca",
+      "postcode": "M4C 1L3",
+      "quarter": "Beaches—East York",
+      "railway": "Main Street",
+      "road": "Main Bus Terminal",
+      "state": "Ontario"
+    },
+    "addresstype": "railway",
+    "boundingbox": [
+      "43.6840489",
+      "43.6940489",
+      "-79.3066043",
+      "-79.2966043"
+    ],
+    "category": "railway",
+    "display_name": "Main Street, Main Bus Terminal, East End-Danforth, Beaches—East York, Toronto, Ontario, M4C 1L3, Canada",
+    "importance": 0.40580843572923003,
+    "lat": "43.6890489",
+    "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+    "lon": "-79.3016043",
+    "name": "Main Street",
+    "osm_id": 5326541297,
+    "osm_type": "node",
+    "place_id": 352181820,
+    "place_rank": 30,
+    "type": "station"
+  }
+]

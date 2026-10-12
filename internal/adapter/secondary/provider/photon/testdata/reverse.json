@@ -1,0 +1,86 @@
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          -0.06103654,
+          51.47716694
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "city": "London",
+        "country": "United Kingdom",
+        "countrycode": "GB",
+        "district": "London Borough of Southwark",
+        "extent": [
+          -0.07110291039144515,
+          51.483452882544846,
+          -0.050970316073046404,
+          51.47088098840359
+        ],
+        "name": "SE15 1QH",
+        "osm_key": "place",
+        "osm_value": "postcode",
+        "state": "England",
+        "type": "other"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -0.0603719,
+          51.4774336
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "city": "London",
+        "country": "United Kingdom",
+        "countrycode": "GB",
+        "district": "London Borough of Southwark",
+        "extent": [
+          -0.07043832310431689,
+          51.48371953850926,
+          -0.050305623395300335,
+          51.471147652438155
+        ],
+        "name": "SE15 2TY",
+        "osm_key": "place",
+        "osm_value": "postcode",
+        "state": "England",
+        "type": "other"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -0.0613,
+          51.47779
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "city": "London",
+        "country": "United Kingdom",
+        "countrycode": "GB",
+        "district": "London Borough of Southwark",
+        "extent": [
+          -0.07136650991513173,
+          51.48407594335918,
+          -0.05123363654122396,
+          51.47150404758963
+        ],
+        "name": "SE15 1DF",
+        "osm_key": "place",
+        "osm_value": "postcode",
+        "state": "England",
+        "type": "other"
+      },
+      "type": "Feature"
+    }
+  ],
+  "type": "FeatureCollection"
+}

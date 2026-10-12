@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "address_line1": "1313 Broadway",
+      "address_line2": "Tacoma, WA 98402, United States of America",
+      "city": "Tacoma",
+      "country": "United States of America",
+      "country_code": "us",
+      "county": "Pierce County",
+      "datasource": {
+        "attribution": "© OpenStreetMap contributors",
+        "license": "Open Database License",
+        "sourcename": "openstreetmap",
+        "url": "https://www.openstreetmap.org/copyright"
+      },
+      "formatted": "1313 Broadway, Tacoma, WA 98402, United States of America",
+      "housenumber": "1313",
+      "lat": 47.25094496732003,
+      "lon": -122.43941302945888,
+      "place_id": "5194bdd3571f9c5ec0591fdef5f61ea04740f00102f90188669f1000000000c00203",
+      "postcode": "98402",
+      "result_type": "building",
+      "state": "Washington",
+      "state_code": "WA",
+      "street": "Broadway",
+      "suburb": "G Street Neighborhood"
+    }
+  ]
+}
