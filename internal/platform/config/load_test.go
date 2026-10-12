@@ -37,7 +37,7 @@ providers:
 	is.Equal(48*time.Hour, cfg.Cache.TTL)
 	is.InDelta(50, cfg.Cache.MaxReuseDistance, 0.0001)
 	must.Len(cfg.Providers, 1)
-	is.Equal("from-file", cfg.Providers[0].APIKey)
+	is.Equal("from-file", cfg.Providers[0].Settings["api_key"])
 }
 
 func TestEnvOverridesFile(t *testing.T) {
@@ -54,8 +54,8 @@ providers:
 	cfg, err := Load(path, nil)
 	must.NoError(err)
 	is.Equal(":7777", cfg.ListenAddr)
-	is.Equal("from-env", cfg.Providers[0].APIKey)
-	is.Equal(100, cfg.Providers[0].DailyQuota)
+	is.Equal("from-env", cfg.Providers[0].Settings["api_key"])
+	is.Equal("100", cfg.Providers[0].Settings["daily_quota"])
 }
 
 func TestProvidersEnvSelectsAndOrders(t *testing.T) {
@@ -87,8 +87,8 @@ func TestProviderFromEnvOnly(t *testing.T) {
 	must.NoError(err)
 	must.Len(cfg.Providers, 1)
 	is.Equal("nominatim", cfg.Providers[0].Name)
-	is.Equal("test-agent", cfg.Providers[0].UserAgent)
-	is.InDelta(1, cfg.Providers[0].RatePerSecond, 0.0001)
+	is.Equal("test-agent", cfg.Providers[0].Settings["user_agent"])
+	is.Equal("1", cfg.Providers[0].Settings["rate_per_second"])
 }
 
 func TestInvalidTTLError(t *testing.T) {
@@ -107,11 +107,16 @@ func TestUnknownKeyIsAnError(t *testing.T) {
 	must.ErrorContains(err, "max_entires")
 }
 
-func TestEnvNumbersRejectTrailingGarbage(t *testing.T) {
-	must := require.New(t)
+// Provider settings are handed on undecoded (env values stay strings); the
+// provider's own strict decode is what rejects a bad number. That path is
+// covered by TestBuildProviders in the serve package.
+func TestProviderSettingsPassThroughUndecoded(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
 	t.Setenv("GEOCODER_PROVIDERS", "chibigeo")
-	t.Setenv("GEOCODER_PROVIDER_CHIBIGEO_RATE_PER_SECOND", "1.5abc")
-	_, err := Load("", nil)
-	must.Error(err)
-	must.ErrorContains(err, "RATE_PER_SECOND")
+	t.Setenv("GEOCODER_PROVIDER_CHIBIGEO_RATE_PER_SECOND", "1.5")
+
+	cfg, err := Load("", nil)
+	must.NoError(err)
+	must.Len(cfg.Providers, 1)
+	is.Equal("1.5", cfg.Providers[0].Settings["rate_per_second"], "env values are strings until the provider decodes them")
 }

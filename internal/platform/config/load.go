@@ -2,8 +2,8 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +18,14 @@ import (
 // EnvPrefix prefixes every environment variable the loader reads.
 const EnvPrefix = "GEOCODER_"
 
-// scalarEnv maps the flat settings' environment variables to their koanf
+// providerEnvPrefix precedes a provider's own settings:
+// GEOCODER_PROVIDER_<NAME>_<FIELD> sets FIELD on provider NAME.
+const providerEnvPrefix = EnvPrefix + "PROVIDER_"
+
+// scalarEnv maps the service's own environment variables to their koanf
 // keys. Provider settings use GEOCODER_PROVIDERS and
-// GEOCODER_PROVIDER_<NAME>_* instead; lists do not layer cleanly through a
-// generic env transform, so they are merged explicitly.
+// GEOCODER_PROVIDER_<NAME>_* instead; those are merged by name below,
+// because a list does not layer cleanly through a generic env transform.
 var scalarEnv = map[string]string{
 	"GEOCODER_LISTEN_ADDR":              "listen_addr",
 	"GEOCODER_OPS_ADDR":                 "ops_addr",
@@ -30,12 +34,13 @@ var scalarEnv = map[string]string{
 	"GEOCODER_CACHE_MAX_REUSE_DISTANCE": "cache.max_reuse_distance",
 }
 
-// raw mirrors the YAML/env shape; strings become typed values in Load.
+// raw mirrors the file and env shape. Providers stay undecoded: each entry
+// is a name plus that provider's own keys.
 type raw struct {
-	ListenAddr string     `koanf:"listen_addr"`
-	OpsAddr    string     `koanf:"ops_addr"`
-	Cache      rawCache   `koanf:"cache"`
-	Providers  []Provider `koanf:"providers"`
+	ListenAddr string           `koanf:"listen_addr"`
+	OpsAddr    string           `koanf:"ops_addr"`
+	Cache      rawCache         `koanf:"cache"`
+	Providers  []map[string]any `koanf:"providers"`
 }
 
 type rawCache struct {
@@ -84,7 +89,8 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 	if err := k.UnmarshalWithConf("", &r, koanf.UnmarshalConf{
 		DecoderConfig: &mapstructure.DecoderConfig{
 			// Unknown keys are typos the operator meant to have an effect;
-			// they fail startup instead of being silently ignored.
+			// they fail startup instead of being silently ignored. Provider
+			// settings are checked by the provider's own strict decode.
 			ErrorUnused:      true,
 			Result:           &r,
 			WeaklyTypedInput: true,
@@ -109,28 +115,31 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 		cfg.Cache.TTL = ttl
 	}
 
-	providers, err := mergeProviders(r.Providers)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.Providers = providers
+	cfg.Providers = providerEntries(r.Providers)
 
 	return cfg, cfg.Validate()
 }
 
-// mergeProviders applies the provider env layer: GEOCODER_PROVIDERS orders
-// and selects providers by name, and GEOCODER_PROVIDER_<NAME>_* overrides
-// each provider's settings. A provider named only in the env list starts
-// from empty settings.
-func mergeProviders(fromFile []Provider) ([]Provider, error) {
-	byName := make(map[string]Provider, len(fromFile))
+// providerEntries turns the file's provider list into entries: it lifts the
+// name out, applies the per-provider environment overrides, and orders the
+// result the way GEOCODER_PROVIDERS names it when that variable is set.
+func providerEntries(fromFile []map[string]any) []ProviderEntry {
+	type source struct {
+		settings map[string]any
+	}
+	byName := make(map[string]source, len(fromFile))
 	var order []string
-	for _, p := range fromFile {
-		if _, dup := byName[p.Name]; dup {
-			return nil, fmt.Errorf("provider %q is listed more than once in the config file", p.Name)
+	for _, entry := range fromFile {
+		name, _ := entry["name"].(string)
+		settings := make(map[string]any, len(entry))
+		for k, v := range entry {
+			if k == "name" {
+				continue
+			}
+			settings[k] = v
 		}
-		byName[p.Name] = p
-		order = append(order, p.Name)
+		byName[name] = source{settings: settings}
+		order = append(order, name)
 	}
 
 	if list := os.Getenv(EnvPrefix + "PROVIDERS"); list != "" {
@@ -140,35 +149,28 @@ func mergeProviders(fromFile []Provider) ([]Provider, error) {
 		}
 	}
 
-	providers := make([]Provider, 0, len(order))
+	entries := make([]ProviderEntry, 0, len(order))
 	for _, name := range order {
-		p := byName[name]
-		p.Name = name
-		prefix := EnvPrefix + "PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
-		applyEnvString(&p.BaseURL, prefix+"BASE_URL")
-		applyEnvString(&p.APIKey, prefix+"API_KEY")
-		applyEnvString(&p.UserAgent, prefix+"USER_AGENT")
-		if v, ok := os.LookupEnv(prefix + "RATE_PER_SECOND"); ok {
-			rate, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %q is not a number", prefix+"RATE_PER_SECOND", v)
-			}
-			p.RatePerSecond = rate
-		}
-		if v, ok := os.LookupEnv(prefix + "DAILY_QUOTA"); ok {
-			quota, err := strconv.Atoi(v)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %q is not a number", prefix+"DAILY_QUOTA", v)
-			}
-			p.DailyQuota = quota
-		}
-		providers = append(providers, p)
+		s := byName[name]
+		settings := make(map[string]any, len(s.settings))
+		maps.Copy(settings, s.settings)
+		applyProviderEnv(settings, name)
+		entries = append(entries, ProviderEntry{Name: name, Settings: settings})
 	}
-	return providers, nil
+	return entries
 }
 
-func applyEnvString(dst *string, key string) {
-	if v, ok := os.LookupEnv(key); ok {
-		*dst = v
+// applyProviderEnv overlays GEOCODER_PROVIDER_<NAME>_<FIELD> onto a
+// provider's settings. The field suffix is lowercased and otherwise
+// untouched, so a provider's own new key needs no change here. Values are
+// strings; the provider's decode coerces them.
+func applyProviderEnv(settings map[string]any, name string) {
+	prefix := providerEnvPrefix + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
+	for _, kv := range os.Environ() {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		settings[strings.ToLower(strings.TrimPrefix(key, prefix))] = value
 	}
 }

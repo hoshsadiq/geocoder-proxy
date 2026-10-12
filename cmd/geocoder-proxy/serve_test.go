@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hoshsadiq/geocoder-proxy/internal/platform/config"
 )
 
 // TestServeEndToEnd boots the real composition root against a fake upstream
@@ -95,4 +97,69 @@ func freeAddr(t *testing.T) string {
 	require.NoError(t, err)
 	defer l.Close()
 	return l.Addr().String()
+}
+
+func TestBuildProviders(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+
+	t.Run("valid entry builds through the registry", func(t *testing.T) {
+		providers, err := buildProviders([]config.ProviderEntry{{
+			Name: "chibigeo",
+			Settings: map[string]any{
+				"base_url":        "http://127.0.0.1",
+				"rate_per_second": "2.5",
+				"daily_quota":     "100",
+			},
+		}})
+		must.NoError(err)
+		must.Len(providers, 1)
+		is.Equal("chibigeo", providers[0].Geocoder.Name())
+		is.Equal(100, providers[0].DailyQuota)
+		is.NotNil(providers[0].Limiter)
+	})
+
+	t.Run("unknown provider names the registered ones", func(t *testing.T) {
+		_ = is
+		_, err := buildProviders([]config.ProviderEntry{{Name: "bogus"}})
+		must.Error(err)
+		must.ErrorContains(err, "bogus")
+		must.ErrorContains(err, "chibigeo")
+	})
+
+	t.Run("a typo'd key is rejected, not ignored", func(t *testing.T) {
+		_, err := buildProviders([]config.ProviderEntry{{
+			Name:     "chibigeo",
+			Settings: map[string]any{"rate_per_secnd": "1"},
+		}})
+		must.Error(err)
+		must.ErrorContains(err, "rate_per_secnd")
+	})
+
+	t.Run("fractional quota is refused, not truncated", func(t *testing.T) {
+		_, err := buildProviders([]config.ProviderEntry{{
+			Name:     "chibigeo",
+			Settings: map[string]any{"rate_per_second": "1", "daily_quota": "1.5"},
+		}})
+		must.Error(err)
+		must.ErrorContains(err, "whole number")
+	})
+
+	t.Run("every provider's problems are reported together", func(t *testing.T) {
+		_, err := buildProviders([]config.ProviderEntry{
+			{Name: "geoapify", Settings: map[string]any{"rate_per_second": "1"}},
+			{Name: "nominatim", Settings: map[string]any{"rate_per_second": "1"}},
+		})
+		must.Error(err)
+		must.ErrorContains(err, "api_key is required")
+		must.ErrorContains(err, "user_agent is required")
+	})
+
+	t.Run("a missing rate is caught by the provider", func(t *testing.T) {
+		_, err := buildProviders([]config.ProviderEntry{{
+			Name:     "chibigeo",
+			Settings: map[string]any{"base_url": "http://127.0.0.1"},
+		}})
+		must.Error(err)
+		must.ErrorContains(err, "rate_per_second")
+	})
 }

@@ -9,14 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDefaultsValidate(t *testing.T) {
-	must := require.New(t)
-	must.Error(defaults().Validate(), "no providers configured is invalid")
+func entry(name string) ProviderEntry {
+	return ProviderEntry{Name: name, Settings: map[string]any{"rate_per_second": 1}}
 }
 
 func TestValidate(t *testing.T) {
-	validProvider := Provider{Name: "chibigeo", RatePerSecond: 1}
-
 	tests := []struct {
 		name    string
 		mutate  func(*Config)
@@ -25,27 +22,25 @@ func TestValidate(t *testing.T) {
 		{name: "valid", mutate: func(*Config) {}},
 		{name: "no providers", mutate: func(c *Config) { c.Providers = nil }, wantErr: "at least one provider"},
 		{name: "empty listen addr", mutate: func(c *Config) { c.ListenAddr = "" }, wantErr: "listen address"},
+		{name: "empty ops addr", mutate: func(c *Config) { c.OpsAddr = "" }, wantErr: "ops address"},
+		{name: "same listen and ops", mutate: func(c *Config) { c.OpsAddr = c.ListenAddr }, wantErr: "must differ"},
 		{name: "zero reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = 0 }, wantErr: "max_reuse_distance"},
-		{name: "zero rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = 0 }, wantErr: "rate_per_second"},
-		{name: "NaN rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = math.NaN() }, wantErr: "rate_per_second"},
-		{name: "infinite rate", mutate: func(c *Config) { c.Providers[0].RatePerSecond = math.Inf(1) }, wantErr: "rate_per_second"},
 		{name: "NaN reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = math.NaN() }, wantErr: "max_reuse_distance"},
+		{name: "infinite reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = math.Inf(1) }, wantErr: "max_reuse_distance"},
 		{name: "negative ttl", mutate: func(c *Config) { c.Cache.TTL = -time.Hour }, wantErr: "cache.ttl"},
 		{name: "negative max entries", mutate: func(c *Config) { c.Cache.MaxEntries = -5 }, wantErr: "max_entries"},
-		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, c.Providers[0]) }, wantErr: "more than once"},
-		{name: "invalid base url", mutate: func(c *Config) { c.Providers[0].BaseURL = "not a url" }, wantErr: "base_url"},
-		{name: "same listen and ops", mutate: func(c *Config) { c.OpsAddr = c.ListenAddr }, wantErr: "must differ"},
-		{name: "negative quota", mutate: func(c *Config) { c.Providers[0].DailyQuota = -1 }, wantErr: "daily_quota"},
-		{name: "nominatim without user agent", mutate: func(c *Config) { c.Providers[0].Name = "nominatim" }, wantErr: "user_agent"},
-		{name: "geoapify without key", mutate: func(c *Config) { c.Providers[0].Name = "geoapify" }, wantErr: "api_key"},
-		{name: "unknown provider name passes", mutate: func(c *Config) { c.Providers[0].Name = "future" }},
+		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, entry("chibigeo")) }, wantErr: "more than once"},
+		{name: "empty provider name", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: ""}} }, wantErr: "name is empty"},
+		// Provider settings are deliberately not checked here: they belong
+		// to the provider that owns them (see all_test's conformance suite).
+		{name: "unknown provider name passes", mutate: func(c *Config) { c.Providers = []ProviderEntry{entry("future")} }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is, must := assert.New(t), require.New(t)
 			cfg := defaults()
-			cfg.Providers = []Provider{validProvider}
+			cfg.Providers = []ProviderEntry{entry("chibigeo")}
 			tt.mutate(&cfg)
 			err := cfg.Validate()
 			if tt.wantErr == "" {
@@ -60,9 +55,17 @@ func TestValidate(t *testing.T) {
 
 func TestValidateCollectsAllProblems(t *testing.T) {
 	must := require.New(t)
-	err := defaults().Validate()
+	cfg := defaults()
+	cfg.ListenAddr = ""
+	cfg.Cache.MaxEntries = -1
+	cfg.Providers = nil
+
+	err := cfg.Validate()
 	must.Error(err)
-	must.ErrorContains(err, "provider")
+	// Every problem in one error, sorted.
+	must.ErrorContains(err, "listen address")
+	must.ErrorContains(err, "max_entries")
+	must.ErrorContains(err, "at least one provider")
 }
 
 func TestDefaults(t *testing.T) {
@@ -71,5 +74,6 @@ func TestDefaults(t *testing.T) {
 	is.Equal(":8080", d.ListenAddr)
 	is.Equal(":9090", d.OpsAddr)
 	is.Equal(30*24*time.Hour, d.Cache.TTL)
+	is.Equal(100_000, d.Cache.MaxEntries)
 	is.InDelta(25, d.Cache.MaxReuseDistance, 0.0001)
 }
