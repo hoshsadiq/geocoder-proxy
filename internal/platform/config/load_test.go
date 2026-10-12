@@ -120,3 +120,14 @@ func TestProviderSettingsPassThroughUndecoded(t *testing.T) {
 	must.Len(cfg.Providers, 1)
 	is.Equal("1.5", cfg.Providers[0].Settings["rate_per_second"], "env values are strings until the provider decodes them")
 }
+
+func TestUnknownProviderEnvNameIsAnError(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("GEOCODER_PROVIDERS", "chibigeo")
+	t.Setenv("GEOCODER_PROVIDER_CHIBIGEO_RATE_PER_SECOND", "1")
+	t.Setenv("GEOCODER_PROVIDER_CHIBI_GEO_RATE_PER_SECOND", "10")
+
+	_, err := Load("", nil)
+	must.Error(err, "an env var naming no configured provider must not be silently ignored")
+	must.ErrorContains(err, "CHIBI_GEO")
+}

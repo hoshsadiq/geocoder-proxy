@@ -5,21 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"reflect"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/knadh/koanf/providers/confmap"
-	"github.com/knadh/koanf/v2"
 
 	"github.com/zulucmd/zulu/v2"
 	"golang.org/x/text/language/display"
@@ -73,17 +66,17 @@ func buildProviders(entries []config.ProviderEntry) ([]service.Provider, error) 
 			continue
 		}
 		cfg := reg.NewConfig()
-		if err := decodeProviderSettings(cfg, entry.Settings); err != nil {
-			problems = append(problems, fmt.Sprintf("provider %s: %v", entry.Name, err))
+		if err := registry.Decode(cfg, entry.Settings); err != nil {
+			problems = append(problems, providerProblem(entry.Name, err))
 			continue
 		}
 		if err := cfg.Validate(); err != nil {
-			problems = append(problems, fmt.Sprintf("provider %s: %v", entry.Name, err))
+			problems = append(problems, providerProblem(entry.Name, err))
 			continue
 		}
 		geocoder, err := reg.Build(cfg)
 		if err != nil {
-			problems = append(problems, fmt.Sprintf("provider %s: %v", entry.Name, err))
+			problems = append(problems, providerProblem(entry.Name, err))
 			continue
 		}
 		providers = append(providers, service.Provider{
@@ -99,45 +92,10 @@ func buildProviders(entries []config.ProviderEntry) ([]service.Provider, error) 
 	return providers, nil
 }
 
-// decodeProviderSettings unmarshals a provider's opaque settings into its
-// own config type. Unknown keys are rejected, and environment values arrive
-// as strings, so weak typing is on. A non-integral number is refused rather
-// than truncated: a fractional daily_quota would otherwise silently become a
-// different budget than the operator wrote.
-func decodeProviderSettings(cfg registry.Config, settings map[string]any) error {
-	k := koanf.New(".")
-	// A static confmap cannot fail to load.
-	_ = k.Load(confmap.Provider(settings, "."), nil)
-	return k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
-		DecoderConfig: &mapstructure.DecoderConfig{
-			ErrorUnused:      true,
-			Result:           cfg,
-			WeaklyTypedInput: true,
-			DecodeHook:       rejectFractionalInt(),
-		},
-	})
-}
-
-// rejectFractionalInt refuses a fractional number being decoded into an int
-// field, for values that arrive as numbers (YAML) or strings (env).
-func rejectFractionalInt() mapstructure.DecodeHookFunc {
-	return func(f, t reflect.Value) (any, error) {
-		if t.Kind() != reflect.Int && t.Kind() != reflect.Int64 {
-			return f.Interface(), nil
-		}
-		switch f.Kind() {
-		case reflect.Float64:
-			if v := f.Float(); v != math.Trunc(v) {
-				return nil, fmt.Errorf("value %v is not a whole number", v)
-			}
-		case reflect.String:
-			v, err := strconv.ParseFloat(f.String(), 64)
-			if err == nil && v != math.Trunc(v) {
-				return nil, fmt.Errorf("value %q is not a whole number", f.String())
-			}
-		}
-		return f.Interface(), nil
-	}
+// providerProblem formats one provider's failure as a single line, so the
+// aggregated startup error stays aligned.
+func providerProblem(name string, err error) string {
+	return fmt.Sprintf("provider %s: %s", name, strings.ReplaceAll(err.Error(), "\n", "; "))
 }
 
 // serve is the composition root: it builds every concrete adapter and wires

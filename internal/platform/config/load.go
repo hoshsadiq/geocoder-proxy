@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -117,7 +118,47 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 
 	cfg.Providers = providerEntries(r.Providers)
 
-	return cfg, cfg.Validate()
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	if err := unknownProviderEnv(cfg.Providers); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// unknownProviderEnv catches a GEOCODER_PROVIDER_<NAME>_* variable whose
+// NAME matches no configured provider: a typo'd name would otherwise be
+// silently ignored while the operator believes the override took effect.
+// A name is recognised when some configured provider's prefix is a prefix
+// of the variable, which needs no assumption about underscores in names.
+func unknownProviderEnv(entries []ProviderEntry) error {
+	prefixes := make([]string, 0, len(entries))
+	for _, e := range entries {
+		prefixes = append(prefixes, providerEnvPrefix+strings.ToUpper(strings.ReplaceAll(e.Name, "-", "_"))+"_")
+	}
+	var problems []string
+	for _, kv := range os.Environ() {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(key, providerEnvPrefix) {
+			continue
+		}
+		known := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(key, prefix) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			problems = append(problems, fmt.Sprintf("%s names no configured provider", key))
+		}
+	}
+	if len(problems) > 0 {
+		slices.Sort(problems)
+		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
+	}
+	return nil
 }
 
 // providerEntries turns the file's provider list into entries: it lifts the
