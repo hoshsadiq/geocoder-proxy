@@ -48,15 +48,21 @@ One new package under `internal/adapter/secondary/provider/<name>/` that impleme
 ```go
 func init() {
  registry.Register("<name>", registry.Registration{
-  New:   func() registry.Config { return &Config{} },
-  Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
+  NewConfig: func() registry.Config { return &Config{} },
+  Build: func(c registry.Config) (port.Geocoder, error) {
+   cfg, ok := c.(*Config)
+   if !ok || cfg == nil {
+    return nil, fmt.Errorf("<name>: unexpected config type %T", c)
+   }
+   return New(cfg)
+  },
  })
 }
 ```
 
-A provider is fully self-contained: its `Config` struct (mapstructure tags), its `Validate()`, and its construction live in its own package. No other package names a provider's fields; the composition root decodes operator config into the registered type, so a new field on an existing provider (or a whole new provider) changes nothing outside its package.
+A provider is fully self-contained: its `Config` struct (koanf tags, `Validate()`, `Rate()`/`Quota()`), and its construction live in its own package. No other package names a provider's fields; the composition root decodes operator config into the registered type, so a new field on an existing provider changes nothing outside its package. Shared rules stay shared: every `Validate()` composes `registry.ValidateLimits` and `registry.ValidateBaseURL` with `errors.Join`, so one startup error lists every problem. The `all_test` conformance suite enforces this for every registered provider.
 
-Then add one blank import to `internal/adapter/secondary/provider/all/`. This is the only place `init()` is acceptable: provider registration follows the `database/sql` driver idiom, and the `all` package makes the side effects visible in a single import block. Everywhere else, use explicit constructors.
+Then add one blank import to `internal/adapter/secondary/provider/all/` and one row to `providerKeys` in `all/all_test.go`: the only two edits outside the new package.
 
 ### Conventions
 
@@ -64,7 +70,7 @@ Then add one blank import to `internal/adapter/secondary/provider/all/`. This is
 - **Never answer empty on failure.** An empty result is only correct when a provider genuinely answered "nothing here". Upstream failure propagates as an error. The Photon adapter maps it to **503, not 502**: the geocoder gem Dawarich uses raises only on 400/401/402/429/503, and a JSON-bodied 502 parses into the empty result that Dawarich then marks as final. Dawarich treats a blank answer as final and never retries the point.
 - **No coordinates in logs or metric labels.** Location history is PII; cardinality rules aside, raw coordinates never appear in telemetry. Provider adapters must also return coordinate-free errors, because the router wraps provider errors verbatim.
 - **Provider adapter contract** (full text in `internal/core/port/geocoder.go`): an empty slice with a nil error is a genuine "nothing here"; any failure, including "operation unsupported", must be an error. Populate `Address.CountryCode` whenever the provider returns one: providers localise country names, and the Photon adapter canonicalises from the code so failover cannot fragment country attribution downstream.
-- **Config layering**: flag > env (`GEOCODER_*`) > optional YAML > defaults, via koanf. CLI via zulu (`github.com/zulucmd/zulu/v2`, a cobra fork: only the error-returning `RunE` hooks exist). Config validation owns the user-facing checks (e.g. a provider rate must be > 0) and must report them as config errors; panics in adapter constructors (`tokenbucket.New`, `service.New`) are the last-line backstop for programming errors, not the validation surface.
+- **Config layering**: flag > env (`GEOCODER_*`) > optional YAML > defaults, via koanf (all config structs carry `koanf:` tags). CLI via zulu (`github.com/zulucmd/zulu/v2`, a cobra fork: only the error-returning `RunE` hooks exist). Each provider owns the user-facing validation of its own config; panics in adapter constructors (`tokenbucket.New`, `service.New`) are the last-line backstop for programming errors, not the validation surface.
 
 ## Commit gate: prek
 

@@ -9,6 +9,7 @@ package photon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -34,28 +35,36 @@ var _ port.Geocoder = (*Client)(nil)
 
 func init() {
 	registry.Register(providerName, registry.Registration{
-		New:   func() registry.Config { return &Config{} },
-		Build: func(c registry.Config) (port.Geocoder, error) { return New(c.(*Config)) },
+		NewConfig: func() registry.Config { return &Config{} },
+		Build: func(c registry.Config) (port.Geocoder, error) {
+			cfg, ok := c.(*Config)
+			if !ok || cfg == nil {
+				return nil, fmt.Errorf("%s: unexpected config type %T", providerName, c)
+			}
+			return New(cfg)
+		},
 	})
 }
 
-// Config is this provider's configuration. It is decoded from operator
-// config (mapstructure) and validated before use; unknown keys are
-// rejected at load time.
+// Config is this provider's configuration, registered as "chibigeo" (the
+// provider it fronts by default; the type is Photon-shaped because any
+// Photon-compatible upstream can serve it). It is decoded from operator
+// config (koanf tags) and validated before use; unknown keys are rejected
+// at load time. It carries a credential: never log or serialise it.
 type Config struct {
-	BaseURL       string  `mapstructure:"base_url"`
-	APIKey        string  `mapstructure:"api_key"`
-	RatePerSecond float64 `mapstructure:"rate_per_second"`
-	DailyQuota    int     `mapstructure:"daily_quota"`
+	BaseURL       string  `koanf:"base_url"`
+	APIKey        string  `koanf:"api_key"`
+	RatePerSecond float64 `koanf:"rate_per_second"`
+	DailyQuota    int     `koanf:"daily_quota"`
 }
 
 // Validate checks the provider's own requirements. Photon-shaped upstreams
 // need no credentials (the API key is optional, for ChibiGeo).
 func (c *Config) Validate() error {
-	if err := registry.ValidateLimits(c.RatePerSecond, c.DailyQuota); err != nil {
-		return err
-	}
-	return registry.ValidateBaseURL(c.BaseURL)
+	return errors.Join(
+		registry.ValidateLimits(c.RatePerSecond, c.DailyQuota),
+		registry.ValidateBaseURL(c.BaseURL),
+	)
 }
 
 // Rate is the configured requests-per-second pacing.

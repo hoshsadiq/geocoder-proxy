@@ -8,6 +8,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -18,8 +19,9 @@ import (
 )
 
 // Config is implemented by each provider's own configuration type. The
-// composition root decodes operator configuration into it (mapstructure,
+// composition root decodes operator configuration into it (koanf tags,
 // with unknown keys rejected), validates it, and hands it to Build.
+// A Config carrying credentials must never be logged or serialised.
 type Config interface {
 	// Validate checks the provider's own requirements (credentials,
 	// endpoints) and reports every problem.
@@ -33,10 +35,11 @@ type Config interface {
 }
 
 // Registration is one provider's entry: how to make a fresh config and how
-// to build the client from a validated one.
+// to build the client from a validated one. Build re-validates through the
+// provider's constructor, so the client is safe however it is reached.
 type Registration struct {
-	New   func() Config
-	Build func(Config) (port.Geocoder, error)
+	NewConfig func() Config
+	Build     func(Config) (port.Geocoder, error)
 }
 
 var (
@@ -44,12 +47,13 @@ var (
 	registry = map[string]Registration{}
 )
 
-// Register adds a provider under its config name. Duplicate or invalid
-// registration is a programming error and panics, matching database/sql.
+// Register adds a provider under its config name. Called from provider
+// packages' init() only. Duplicate or invalid registration is a
+// programming error and panics, matching database/sql.
 func Register(name string, r Registration) {
 	mu.Lock()
 	defer mu.Unlock()
-	if r.New == nil || r.Build == nil {
+	if r.NewConfig == nil || r.Build == nil {
 		panic(fmt.Sprintf("registry: incomplete registration for %q", name))
 	}
 	if _, dup := registry[name]; dup {
@@ -82,23 +86,32 @@ func Names() []string {
 // Shared so the rules live once while the fields stay provider-owned.
 func ValidateLimits(rate float64, quota int) error {
 	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
-		return fmt.Errorf("rate_per_second must be a finite positive number")
+		return errors.New("rate_per_second must be a finite positive number")
 	}
 	if quota < 0 {
-		return fmt.Errorf("daily_quota must not be negative")
+		return errors.New("daily_quota must not be negative")
 	}
 	return nil
 }
 
 // ValidateBaseURL checks a provider's endpoint override. Empty is valid
-// (the provider's public default applies).
+// (the provider's public default applies). Credentials, query and fragment
+// are rejected: credentials must not ride the URL, and the adapters
+// concatenate path and query onto the base, so a pre-filled one breaks the
+// request.
 func ValidateBaseURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("base_url is not a valid http(s) URL")
+		return errors.New("base_url is not a valid http(s) URL")
+	}
+	if u.User != nil {
+		return errors.New("base_url must not carry credentials")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("base_url must not carry a query or fragment")
 	}
 	return nil
 }

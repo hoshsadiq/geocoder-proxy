@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -44,23 +45,23 @@ func uniqueName(base string) string {
 	return fmt.Sprintf("%s-%d", base, testNameCounter.Add(1))
 }
 
-func stubRegistration() Registration {
+func stubRegistration(name string) Registration {
 	return Registration{
-		New:   func() Config { return &stubConfig{rate: 1} },
-		Build: func(Config) (port.Geocoder, error) { return stubGeocoder{"stub"}, nil },
+		NewConfig: func() Config { return &stubConfig{rate: 1} },
+		Build:     func(Config) (port.Geocoder, error) { return stubGeocoder{name}, nil },
 	}
 }
 
 func TestRegisterAndLookup(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	name := uniqueName("stub")
-	Register(name, stubRegistration())
+	Register(name, stubRegistration(name))
 
 	r, ok := Lookup(name)
 	must.True(ok)
-	g, err := r.Build(r.New())
+	g, err := r.Build(r.NewConfig())
 	must.NoError(err)
-	is.Equal("stub", g.Name())
+	is.Equal(name, g.Name(), "Lookup must return the registration made under this name")
 
 	_, ok = Lookup("missing")
 	is.False(ok)
@@ -70,13 +71,16 @@ func TestRegisterAndLookup(t *testing.T) {
 func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	require.Panics(t, func() {
 		name := uniqueName("dup")
-		Register(name, stubRegistration())
-		Register(name, stubRegistration())
+		Register(name, stubRegistration(name))
+		Register(name, stubRegistration(name))
 	})
 }
 
 func TestRegisterPanicsOnIncomplete(t *testing.T) {
 	require.Panics(t, func() { Register(uniqueName("nilnew"), Registration{}) })
+	require.Panics(t, func() {
+		Register(uniqueName("nilbuild"), Registration{NewConfig: func() Config { return &stubConfig{rate: 1} }})
+	})
 }
 
 func TestValidateLimits(t *testing.T) {
@@ -87,6 +91,8 @@ func TestValidateLimits(t *testing.T) {
 	must.Error(ValidateLimits(-1, 0))
 	must.Error(ValidateLimits(1, -1))
 	must.Error(ValidateLimits(2.5, -2))
+	must.Error(ValidateLimits(math.NaN(), 0))
+	must.Error(ValidateLimits(math.Inf(1), 0))
 }
 
 func TestValidateBaseURL(t *testing.T) {
@@ -96,4 +102,8 @@ func TestValidateBaseURL(t *testing.T) {
 	must.NoError(ValidateBaseURL("http://localhost:2322"))
 	must.Error(ValidateBaseURL("not a url"))
 	must.Error(ValidateBaseURL("ftp://example.com"))
+	must.Error(ValidateBaseURL("http://"))
+	must.Error(ValidateBaseURL("https://user:pass@example.com"), "credentials must not ride the URL")
+	must.Error(ValidateBaseURL("http://example.com?x=1"))
+	must.Error(ValidateBaseURL("http://example.com#frag"))
 }
