@@ -18,10 +18,9 @@ ops_addr: ":9090"
 # 503, so it surfaces as transient to Dawarich (whose own geocoder timeout is
 # 5s) instead of a client-side timeout.
 request_timeout: 4s
-# Cap on one provider attempt. A slow provider is given up on and the next one
-# is tried, so failover still happens inside the budget. Must not exceed
-# request_timeout.
-upstream_timeout: 3s
+# Cap on one provider attempt. At most half the budget, so a pace wait plus a
+# capped attempt still leaves room to fail over inside it.
+upstream_timeout: 2s
 
 cache:
   ttl: 720h

@@ -50,11 +50,12 @@ func New(svc port.GeocodeService, regionNames display.Namer, logger *slog.Logger
 // coordinates or search text into the log.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	rw := &statusRecorder{ResponseWriter: w}
 	h.mux.ServeHTTP(rw, r)
 	h.logger.InfoContext(r.Context(), "request",
 		"method", r.Method,
 		"path", r.URL.EscapedPath(),
+		// 0 means the handler wrote nothing (the caller was gone).
 		"status", rw.status,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
@@ -62,12 +63,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type statusRecorder struct {
 	http.ResponseWriter
+	// status is 0 until the handler writes a status or a body.
 	status int
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
+	if r.status == 0 {
+		r.status = code
+	}
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 // maxResultLimit caps the limit parameter. Photon's own servers cap

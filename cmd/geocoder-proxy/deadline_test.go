@@ -18,9 +18,11 @@ import (
 	photonprimary "github.com/hoshsadiq/geocoder-proxy/internal/adapter/primary/photon"
 	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/cache/memory"
 	metricsadp "github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/metrics/prometheus"
+	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/pacing/tokenbucket"
 	providerphoton "github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/photon"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/port"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/service"
+	"github.com/hoshsadiq/geocoder-proxy/internal/platform/config"
 )
 
 // featureCollectionJSON is one Photon-shaped answer, enough for the router
@@ -57,6 +59,15 @@ func providerAt(t *testing.T, baseURL string) service.Provider {
 	client, err := providerphoton.New(&providerphoton.Config{BaseURL: baseURL, RatePerSecond: 1000})
 	require.NoError(t, err)
 	return service.Provider{Geocoder: client}
+}
+
+// pacedProvider is providerAt with the real 1 request/second token bucket
+// production always sets, so a pace wait is part of the lookup's arithmetic.
+func pacedProvider(t *testing.T, baseURL string) service.Provider {
+	t.Helper()
+	p := providerAt(t, baseURL)
+	p.Limiter = tokenbucket.New(1)
+	return p
 }
 
 type chain struct {
@@ -181,4 +192,31 @@ func TestClientCancellationWritesNothing(t *testing.T) {
 	must.Empty(rec.Body.String(), "a departed caller gets no body")
 	is.Empty(rec.Header().Get("Content-Type"), "a departed caller gets no status")
 	is.NotContains(c.logs.String(), `"level":"ERROR"`, "a departed caller is not an error")
+	is.Contains(c.logs.String(), `"status":0`, "the request log reports no status for a departed caller, not 200")
+}
+
+// TestRequestDeadlineFailsOverUnderPacing mirrors production: every provider
+// carries a real 1 request/second token bucket, so a pace wait is part of the
+// arithmetic. Provider 1's token is spent up front, so the request waits about a
+// second for the next one before its hanging attempt; with the shipped defaults
+// (an attempt cap of half the budget) that wait plus the capped attempt still
+// leaves room for provider 2, on a fresh bucket, to answer inside the budget.
+func TestRequestDeadlineFailsOverUnderPacing(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	hanging := hangingUpstream(t)
+	answering := answeringUpstream(t)
+
+	first := pacedProvider(t, hanging.URL)
+	must.NoError(first.Limiter.Wait(t.Context()), "spend provider 1's first token so the request waits for one")
+
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout,
+		first, pacedProvider(t, answering.URL))
+
+	start := time.Now()
+	rec := doRequest(c.handler, t.Context())
+	elapsed := time.Since(start)
+
+	must.Equal(http.StatusOK, rec.Code, "the healthy provider answers after the capped, paced attempt")
+	must.Less(elapsed, config.DefaultRequestTimeout, "the answer lands inside the budget")
+	is.Contains(rec.Body.String(), "Test Street")
 }

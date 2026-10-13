@@ -125,8 +125,8 @@ func TestDefaultTimeouts(t *testing.T) {
 	path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n")
 	cfg, err := Load(path, nil)
 	must.NoError(err)
-	is.Equal(4*time.Second, cfg.RequestTimeout)
-	is.Equal(3*time.Second, cfg.UpstreamTimeout)
+	is.Equal(DefaultRequestTimeout, cfg.RequestTimeout)
+	is.Equal(DefaultUpstreamTimeout, cfg.UpstreamTimeout)
 }
 
 func TestInvalidRequestTimeoutError(t *testing.T) {
@@ -137,12 +137,22 @@ func TestInvalidRequestTimeoutError(t *testing.T) {
 	must.ErrorContains(err, "request_timeout")
 }
 
+func TestUpstreamTimeoutAboveHalfBudgetError(t *testing.T) {
+	must := require.New(t)
+	// Positive and below the budget, but leaving no room for a pace wait plus a
+	// failover: rejected.
+	path := writeYAML(t, "request_timeout: 4s\nupstream_timeout: 3s\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	_, err := Load(path, nil)
+	must.Error(err)
+	must.ErrorContains(err, "at most half")
+}
+
 func TestUpstreamTimeoutAboveBudgetError(t *testing.T) {
 	must := require.New(t)
 	path := writeYAML(t, "request_timeout: 2s\nupstream_timeout: 5s\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
 	_, err := Load(path, nil)
 	must.Error(err)
-	must.ErrorContains(err, "must not exceed")
+	must.ErrorContains(err, "at most half")
 }
 
 func TestUnknownKeyIsAnError(t *testing.T) {

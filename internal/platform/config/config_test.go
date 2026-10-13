@@ -32,7 +32,8 @@ func TestValidate(t *testing.T) {
 		{name: "zero request timeout", mutate: func(c *Config) { c.RequestTimeout = 0 }, wantErr: "request_timeout"},
 		{name: "negative request timeout", mutate: func(c *Config) { c.RequestTimeout = -time.Second }, wantErr: "request_timeout"},
 		{name: "zero upstream timeout", mutate: func(c *Config) { c.UpstreamTimeout = 0 }, wantErr: "upstream_timeout"},
-		{name: "upstream timeout above the budget", mutate: func(c *Config) { c.UpstreamTimeout = c.RequestTimeout + time.Second }, wantErr: "must not exceed"},
+		{name: "upstream timeout above half the budget", mutate: func(c *Config) { c.UpstreamTimeout = c.RequestTimeout }, wantErr: "at most half"},
+		{name: "upstream timeout at exactly half the budget", mutate: func(c *Config) { c.UpstreamTimeout = c.RequestTimeout / 2 }},
 		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, entry("chibigeo")) }, wantErr: "more than once"},
 		{name: "empty provider name", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: ""}} }, wantErr: "name is empty"},
 		// Provider settings are deliberately not checked here: they belong
@@ -80,6 +81,14 @@ func TestDefaults(t *testing.T) {
 	is.Equal(30*24*time.Hour, d.Cache.TTL)
 	is.Equal(100_000, d.Cache.MaxEntries)
 	is.InDelta(25, d.Cache.MaxReuseDistance, 0.0001)
-	is.Equal(4*time.Second, d.RequestTimeout)
-	is.Equal(3*time.Second, d.UpstreamTimeout, "the default attempt cap sits below the default budget")
+	is.Equal(DefaultRequestTimeout, d.RequestTimeout)
+	is.Equal(DefaultUpstreamTimeout, d.UpstreamTimeout)
+}
+
+// The defaults must leave real failover room: one pace wait plus a capped
+// attempt has to fit in the budget with a second provider still to try.
+func TestDefaultTimeoutsLeaveFailoverRoom(t *testing.T) {
+	is := assert.New(t)
+	is.LessOrEqual(2*DefaultUpstreamTimeout, DefaultRequestTimeout,
+		"the attempt cap must be at most half the budget")
 }

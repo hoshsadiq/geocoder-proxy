@@ -29,6 +29,12 @@ func TestMetrics(t *testing.T) {
 	is.InDelta(1, testutil.ToFloat64(m.providerCalls.WithLabelValues("chibigeo", "quota_exhausted")), 0.0001)
 	is.Equal(1, testutil.CollectAndCount(m.providerLatency, "geocoder_provider_request_duration_seconds"))
 
+	// An error with no measurable attempt (a budget cut) is counted without a
+	// latency observation, so the histogram is not skewed by zeroes.
+	m.ProviderRequest("chibigeo", port.ProviderError, 0)
+	is.InDelta(1, testutil.ToFloat64(m.providerCalls.WithLabelValues("chibigeo", "error")), 0.0001)
+	is.Equal(1, testutil.CollectAndCount(m.providerLatency, "geocoder_provider_request_duration_seconds"))
+
 	m.QuotaRemaining("chibigeo", 42)
 	is.InDelta(42, testutil.ToFloat64(m.quotaRemaining.WithLabelValues("chibigeo")), 0.0001)
 }

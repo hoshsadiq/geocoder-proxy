@@ -65,8 +65,12 @@ func WithClock(now func() time.Time) Option {
 
 // WithAttemptTimeout caps one provider attempt, so a slow provider fails over
 // to the next instead of consuming the whole request budget. Zero disables the
-// per-attempt cap.
+// per-attempt cap. A negative value is a programming error and panics, matching
+// the other constructors.
 func WithAttemptTimeout(d time.Duration) Option {
+	if d < 0 {
+		panic("service.WithAttemptTimeout: negative timeout")
+	}
 	return func(r *Router) { r.attemptTimeout = d }
 }
 
@@ -193,6 +197,22 @@ func (r *Router) attemptContext(ctx context.Context) (context.Context, context.C
 	return context.WithTimeout(ctx, r.attemptTimeout)
 }
 
+// budgetCut reports whether the request context ended the lookup mid-attempt. A
+// deadline cut (the budget, or a pace wait) is recorded as a provider error so the
+// error-rate alert sees an unanswered lookup; plain cancellation (the caller hung
+// up) is not a provider failure and is recorded as nothing. d is the attempt's
+// elapsed time, or zero when the pace wait was cut before any attempt began.
+func (r *Router) budgetCut(ctx context.Context, provider string, d time.Duration) (bool, error) {
+	err := ctx.Err()
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		r.metrics.ProviderRequest(provider, port.ProviderError, d)
+	}
+	return true, err
+}
+
 // callProviders tries each provider in order until one answers. It is the
 // home of the never-blank rule: provider errors are collected and surfaced
 // as ErrAllProvidersFailed, never converted into an empty answer. found only
@@ -222,8 +242,8 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Co
 
 		if p.Limiter != nil {
 			if err := p.Limiter.Wait(ctx); err != nil {
-				if ctx.Err() != nil {
-					return zero, ctx.Err()
+				if done, doneErr := r.budgetCut(ctx, name, 0); done {
+					return zero, doneErr
 				}
 				r.metrics.ProviderRequest(name, port.ProviderPacingLimited, 0)
 				errs = append(errs, fmt.Errorf("%s: %w", name, err))
@@ -246,8 +266,8 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Co
 		}
 
 		if err != nil {
-			if ctx.Err() != nil {
-				return zero, ctx.Err()
+			if done, doneErr := r.budgetCut(ctx, name, d); done {
+				return zero, doneErr
 			}
 			r.metrics.ProviderRequest(name, port.ProviderError, d)
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))

@@ -14,6 +14,18 @@ import (
 	"time"
 )
 
+// Shipped defaults for the two lookup timeouts. Exported so the docs, the
+// tests and the composition root all pin the same numbers.
+const (
+	// DefaultRequestTimeout is the per-request budget: below Dawarich's own
+	// 5s geocoder timeout, so an expired lookup reaches the consumer as a 503
+	// rather than as a client-side timeout.
+	DefaultRequestTimeout = 4 * time.Second
+	// DefaultUpstreamTimeout caps one provider attempt. Half the budget, so a
+	// pace wait plus a capped attempt still leaves room for one failover.
+	DefaultUpstreamTimeout = 2 * time.Second
+)
+
 // Config is the validated runtime configuration.
 type Config struct {
 	// ListenAddr is the Photon API listener address.
@@ -58,10 +70,10 @@ func defaults() Config {
 	return Config{
 		ListenAddr: ":8080",
 		OpsAddr:    ":9090",
-		// The default upstream cap sits below the default budget, so one slow
-		// provider leaves room for failover.
-		RequestTimeout:  4 * time.Second,
-		UpstreamTimeout: 3 * time.Second,
+		// The default upstream cap is half the budget, so a pace wait plus a
+		// capped attempt still leaves room for one failover.
+		RequestTimeout:  DefaultRequestTimeout,
+		UpstreamTimeout: DefaultUpstreamTimeout,
 		Cache: Cache{
 			TTL:              30 * 24 * time.Hour,
 			MaxEntries:       100_000,
@@ -90,8 +102,11 @@ func (c Config) Validate() error {
 	}
 	if c.UpstreamTimeout <= 0 {
 		problems = append(problems, "upstream_timeout must be a positive duration")
-	} else if c.UpstreamTimeout > c.RequestTimeout {
-		problems = append(problems, "upstream_timeout must not exceed request_timeout")
+	} else if c.UpstreamTimeout > c.RequestTimeout/2 {
+		// A single attempt cap above half the budget leaves no room to try
+		// the next provider (the pace wait comes out of the same budget), so
+		// failover cannot happen inside it.
+		problems = append(problems, "upstream_timeout must be at most half of request_timeout")
 	}
 	if c.Cache.MaxReuseDistance <= 0 || math.IsNaN(c.Cache.MaxReuseDistance) || math.IsInf(c.Cache.MaxReuseDistance, 0) {
 		problems = append(problems, "cache.max_reuse_distance must be a finite positive number")

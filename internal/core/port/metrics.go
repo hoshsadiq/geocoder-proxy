@@ -41,7 +41,8 @@ type Metrics interface {
 	CacheLookup(outcome CacheOutcome)
 
 	// ProviderRequest records one upstream attempt. d is the call duration
-	// and is meaningless for outcomes that never reached the network.
+	// and is meaningless for outcomes that never reached the network; a zero d
+	// means no measurable attempt and is counted without a latency observation.
 	ProviderRequest(provider string, outcome ProviderOutcome, d time.Duration)
 
 	// QuotaRemaining reports how many calls a provider has left today; it is

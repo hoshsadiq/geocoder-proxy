@@ -63,11 +63,13 @@ func (m *Metrics) CacheLookup(outcome port.CacheOutcome) {
 	m.cacheLookups.WithLabelValues(string(outcome)).Inc()
 }
 
-// ProviderRequest records one upstream attempt.
+// ProviderRequest records one upstream attempt. d is the call duration and is
+// meaningless for outcomes that never reached the network; a zero d is treated
+// as "no measurable attempt" and is counted without a latency observation.
 func (m *Metrics) ProviderRequest(provider string, outcome port.ProviderOutcome, d time.Duration) {
 	m.providerCalls.WithLabelValues(provider, string(outcome)).Inc()
 	// Only outcomes that reached the network have a meaningful duration.
-	if outcome == port.ProviderSuccess || outcome == port.ProviderEmpty || outcome == port.ProviderError {
+	if d > 0 && (outcome == port.ProviderSuccess || outcome == port.ProviderEmpty || outcome == port.ProviderError) {
 		m.providerLatency.WithLabelValues(provider).Observe(d.Seconds())
 	}
 }

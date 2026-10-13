@@ -469,14 +469,47 @@ func TestReverseContextCancelledDuringProviderCall(t *testing.T) {
 		Provider{Geocoder: p2, DailyQuota: 10},
 	)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
 	defer cancel()
 	_, err := r.Reverse(ctx, query(cellNear))
 	must.Error(err)
-	must.ErrorIs(err, context.DeadlineExceeded)
+	must.ErrorIs(err, context.Canceled, "a hang-up is a cancellation, not a deadline")
 	is.Equal(0, p2.reverseCalls, "a dead caller must not spend quota on the remaining providers")
 	is.NotContains(outcomesOf(metrics), port.ProviderError,
 		"a caller-side cancellation is not a provider failure")
+}
+
+// A deadline that ends an attempt (the request budget, or the per-attempt cap)
+// must still be visible to the error-rate alert: it is an unanswered lookup, not
+// a hang-up.
+func TestReverseDeadlineCutRecordsProviderError(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	p1 := &fakeGeocoder{
+		name: "p1",
+		reverseFn: func(ctx context.Context, _ domain.ReverseQuery) ([]domain.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	r := newRouter(newFakeCache(), metrics, Provider{Geocoder: p1})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+	_, err := r.Reverse(ctx, query(cellNear))
+	must.ErrorIs(err, context.DeadlineExceeded)
+	is.Equal([]port.ProviderOutcome{port.ProviderError}, outcomesOf(metrics))
+}
+
+func TestWithAttemptTimeoutRejectsNegative(t *testing.T) {
+	must := require.New(t)
+	must.Panics(func() {
+		New(newFakeCache(), &fakeMetrics{}, nil, WithAttemptTimeout(-time.Second))
+	})
 }
 
 func TestForward(t *testing.T) {

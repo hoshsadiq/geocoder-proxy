@@ -27,8 +27,9 @@ health and Prometheus metrics live on `:9090` (`/healthz`, `/metrics`).
 Two timeouts bound a lookup. `request_timeout` (default 4s) is the
 per-request budget: a lookup still unanswered when it runs out is answered
 503, below Dawarich's own 5s geocoder timeout. `upstream_timeout` (default
-3s, never above the budget) caps a single provider attempt, so one slow
-provider fails over instead of eating the whole budget.
+2s) caps a single provider attempt and must be at most half the budget, so
+the pace wait plus one capped attempt still leaves room to try the next
+provider inside the budget.
 
 ## What it does
 
