@@ -22,20 +22,18 @@ Configuration layers environment (`GEOCODER_*`) over a YAML file (`--config` or
 The Photon API listens on `:8080` (`/reverse`, `/api`); health and Prometheus
 metrics listen on `:9090` (`/healthz`, `/metrics`).
 
-## Timeouts and load
+## Timeouts
 
 `request_timeout` (default 4s) is the budget for one lookup, set below
 Dawarich's own 5s geocoder timeout. A lookup still unanswered at the budget is
 answered 503, which Dawarich retries. `upstream_timeout` (default 2s) caps a
 single provider attempt and must be at most half the budget, so a lookup can
-wait for one provider's pace token, give up on it, and still try the next
-provider inside the budget.
+give up on a slow provider and still try the next one in time.
 
-That holds for an uncontended lookup. Each provider is paced separately
-(`rate_per_second`), so the Nth simultaneous lookup queues roughly N-1 seconds
-before its attempt starts and can spend the whole budget waiting. Under load a
-contended lookup therefore degrades to a 503 that the consumer retries, which
-is the intended trade. AGENTS.md records the measurements.
+That holds for one lookup at a time. Providers have their own pace limit, so a
+batch of lookups queues up and the last in the batch can spend the whole budget
+waiting for its turn. Those answer 503 and get retried, which is better than
+pushing a provider past its limit. AGENTS.md has the detail.
 
 ## What it does
 

@@ -15,12 +15,13 @@ listen_addr: ":8080"
 ops_addr: ":9090"
 
 # Per-request budget. A lookup still unanswered when it runs out is answered
-# 503, so it surfaces as transient to Dawarich (whose own geocoder timeout is
-# 5s) instead of a client-side timeout.
+# 503, so Dawarich sees a transient error and retries, rather than a client-side
+# timeout at its own 5s limit.
 request_timeout: 4s
-# Cap on one provider attempt. At most half the budget, so one pace wait plus a
-# capped attempt leaves room to fail over inside it (per uncontended lookup:
-# under contention the pace queue itself consumes the budget).
+# Cap on one provider attempt. At most half the budget, so there is time to try
+# the next provider when one is slow. Lookups arriving together queue on each
+# provider's rate limit, so the budget can also go on waiting rather than on a
+# provider.
 upstream_timeout: 2s
 
 cache:
