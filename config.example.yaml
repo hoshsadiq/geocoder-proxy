@@ -8,7 +8,7 @@
 # GEOCODER_CACHE_MAX_REUSE_DISTANCE.
 # GEOCODER_PROVIDERS selects and orders providers by name;
 # GEOCODER_PROVIDER_<NAME>_<FIELD> overrides each provider's settings
-# (BASE_URL, API_KEY, USER_AGENT, RATE_PER_SECOND, DAILY_QUOTA).
+# (BASE_URL, API_KEY, USER_AGENT, RATE_PER_SECOND, DAILY_QUOTA, TYPE, TIER).
 # Keys are validated: unknown keys and invalid values fail startup.
 
 listen_addr: ":8080"
@@ -31,37 +31,40 @@ cache:
   # reuse it, in metres.
   max_reuse_distance: 25
 
-# Providers are grouped into tiers. Lookups rotate between the providers of
-# the earliest tier that still has someone available, so several instances of a
-# type share the load instead of one carrying it until its quota runs out. A
-# later tier is only reached once every provider before it has failed or run out
-# of quota, which is where a public rescue service belongs. Within a tier, order
-# is the order written here.
+# Providers are tried in the order written. A `tier` groups providers that
+# rotate among themselves: successive lookups start at the next provider in the
+# group, so several instances share the load. A later tier is reached only once
+# every provider before it failed or ran out of quota, which is where a public
+# rescue service belongs. Leave `tier` out and each provider stands on its own,
+# tried in the order written.
 #
 # Every entry needs a `name`, unique in this list. `type` names the provider to
 # use and defaults to `name`, so set it only when the same type appears more
-# than once. `tier` defaults to 1. rate_per_second paces calls and daily_quota
-# caps them over a rolling 24-hour window (0 = unlimited); both are per
-# instance.
+# than once. rate_per_second paces calls and daily_quota caps them over a
+# rolling 24-hour window (0 = unlimited); both are per instance.
 providers:
   - name: chibi-eu
     type: chibigeo
     # api_key: set GEOCODER_PROVIDER_CHIBI_EU_API_KEY, never in a committed file
     rate_per_second: 1
     daily_quota: 2500
+    tier: 1
   - name: chibi-us
     type: chibigeo
     # api_key: set GEOCODER_PROVIDER_CHIBI_US_API_KEY
     rate_per_second: 1
     daily_quota: 2500
+    tier: 1
   - name: geoapify
     # api_key: GEOCODER_PROVIDER_GEOAPIFY_API_KEY
     rate_per_second: 5
     daily_quota: 3000
+    tier: 1
   - name: locationiq
     # api_key: GEOCODER_PROVIDER_LOCATIONIQ_API_KEY
     rate_per_second: 2
     daily_quota: 5000
+    tier: 1
   - name: nominatim
     # A public rescue service: later tier and a small daily quota, so rotation
     # never hands it a steady share of an import.

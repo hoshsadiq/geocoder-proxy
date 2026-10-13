@@ -44,8 +44,9 @@ pushing a provider past its limit. AGENTS.md has the detail.
   hundreds.
 - Paces each provider per second and counts daily calls against its quota,
   moving to the next provider when one is throttled, out of quota, or down.
-- Rotates between providers, so several instances share the load instead of one
-  doing all the work until its quota runs out.
+- Tries providers in order, or rotates within a shared `tier`, so several
+  instances share the load instead of one doing all the work until its quota
+  runs out.
 - Never returns an empty result to hide a failure. An empty answer means a
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
@@ -61,7 +62,16 @@ import.
 
 You can list several providers, and more than one instance of the same type.
 Every entry has a `name`; `type` names the provider to use and defaults to the
-name, so you only set it when the same type appears more than once:
+name, so you only set it when the same type appears more than once.
+
+Without a `tier`, each provider stands on its own and is tried in the order you
+wrote it: the first answers until it fails or runs out of quota, then the next.
+That is what a config did before tiers existed, so leaving `tier` out changes
+nothing.
+
+Providers that share a `tier` rotate among themselves. Each lookup starts at
+the next provider in the group, so the group shares the work instead of the
+first one taking it all:
 
 ```yaml
 providers:
@@ -69,10 +79,12 @@ providers:
     type: chibigeo
     rate_per_second: 1
     daily_quota: 2500
+    tier: 1
   - name: chibi-us
     type: chibigeo
     rate_per_second: 1
     daily_quota: 2500
+    tier: 1
   - name: nominatim
     rate_per_second: 1
     daily_quota: 500
@@ -80,19 +92,25 @@ providers:
     user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
 ```
 
-Lookups rotate between the providers that can serve them, so the next lookup
-starts at the next provider rather than waiting behind the first. Four
-providers paced at one call a second carry about four lookups a second between
-them, instead of the one-a-second the first provider allows on its own. Each
-provider still keeps its own pace and its own daily quota, and when the chosen
-one fails or is out of quota the lookup moves on.
+A tier is a set of providers you are happy to have answer the same lookups.
+Rotation goes by turn, not by speed, so a tier carries its number of providers
+times its slowest member's rate. Four instances paced at one call a second
+carry four lookups a second between them. Add a fifth that is faster, say 5/s,
+and it only adds one: five members means each gets one turn in five, so the
+group moves at five a second. Put providers in a tier only when they are
+comparable, and keep a provider with thinner coverage out of a better
+provider's tier.
 
-A `tier` groups providers and changes who is in the rotation. While any
-provider in the first tier can answer, providers in later tiers are left alone;
-they are reached only once everything before them has failed or run out of
-quota. That is where a public service such as Nominatim or komoot's demo Photon
-belongs, with a small daily quota, so it acts as an occasional rescue and never
-as the thing carrying a bulk import.
+A later `tier` is reached only once every provider before it has failed or run
+out of quota. That is where a public service such as Nominatim or komoot's demo
+Photon belongs, with a small daily quota: an occasional rescue, never the thing
+carrying a bulk import.
+
+An empty answer is final. When a provider answers "nothing here", the lookup
+ends and that answer is cached for the whole cell, so the next provider in the
+tier is not tried. A sparse provider can settle a cell that a more thorough
+one would have filled, which is the other reason to keep a tier to providers
+of similar coverage.
 
 The `provider` label on the metrics and in the logs is the instance `name`, so
 two instances of one type show up separately.

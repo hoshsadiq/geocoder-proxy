@@ -75,7 +75,7 @@ providers:
 }
 
 // A single entry with no type or tier keeps working: the type defaults to the
-// instance name and the tier to the first.
+// instance name and the tier gives it a place of its own.
 func TestProviderTypeAndTierDefaultToSingleEntryShape(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n")
@@ -108,6 +108,54 @@ func TestLoadRejectsMalformedTier(t *testing.T) {
 			must.ErrorContains(err, "tier must be a positive integer")
 		})
 	}
+}
+
+// An out-of-range number is not a tier. Go saturates a float-to-int conversion
+// at the integer limits, so 1e300 would otherwise arrive as the largest tier.
+func TestLoadRejectsOutOfRangeTier(t *testing.T) {
+	for _, tier := range []string{".inf", "-.inf", ".nan", "1e300"} {
+		t.Run(tier, func(t *testing.T) {
+			must := require.New(t)
+			path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n    tier: "+tier+"\n")
+			_, err := Load(path, nil)
+			must.Error(err)
+			must.ErrorContains(err, "tier must be a positive integer")
+		})
+	}
+}
+
+// A type that is present but not a non-empty string is rejected, not silently
+// replaced by the instance name.
+func TestLoadRejectsNonStringType(t *testing.T) {
+	for _, value := range []string{"5", "[x]", "true", "null", "''"} {
+		t.Run(value, func(t *testing.T) {
+			must := require.New(t)
+			path := writeYAML(t, "providers:\n  - name: chibigeo\n    type: "+value+"\n    rate_per_second: 1\n")
+			_, err := Load(path, nil)
+			must.Error(err)
+			must.ErrorContains(err, "type must be a non-empty string")
+		})
+	}
+}
+
+// With no tier written, each provider gets a tier of its own in list order, so
+// a two-provider config keeps the strict order it had before tiers existed.
+func TestProvidersWithoutTierKeepConfigOrder(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, `
+providers:
+  - name: chibigeo
+    rate_per_second: 1
+  - name: nominatim
+    user_agent: x
+    rate_per_second: 1
+`)
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	must.Len(cfg.Providers, 2)
+	is.Equal(1, cfg.Providers[0].Tier)
+	is.Equal(2, cfg.Providers[1].Tier, "the second provider is its own tier, after the first")
 }
 
 func TestLoadRejectsDuplicateInstanceName(t *testing.T) {

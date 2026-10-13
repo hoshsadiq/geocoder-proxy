@@ -66,9 +66,11 @@ type ProviderEntry struct {
 	// Type is the registry key (chibigeo, geoapify, locationiq, nominatim).
 	// It defaults to Name, so a single instance of a type needs no Type.
 	Type string
-	// Tier groups providers for rotation: lookups rotate only among the
-	// providers of the earliest tier that has anyone available, and a later
-	// tier is rescue only. 1 is the first tier and the default.
+	// Tier groups providers for rotation: providers that share a tier rotate
+	// among themselves, and a later tier is reached only when every provider
+	// before it failed or is out of quota. The loader gives each entry without
+	// a tier a tier of its own, in list order, so a config written before
+	// tiers existed keeps its strict order. 1 is the first tier.
 	Tier int
 	// Settings are the provider's own keys, as read from the file and
 	// overridden by GEOCODER_PROVIDER_<NAME>_<FIELD>.
@@ -135,6 +137,9 @@ func (c Config) Validate() error {
 		if p.Name == "" {
 			problems = append(problems, fmt.Sprintf("providers[%d]: name is empty", i))
 			continue
+		}
+		if p.Type == "" {
+			problems = append(problems, fmt.Sprintf("provider %q: type must be a non-empty string", p.Name))
 		}
 		if seen[p.Name] {
 			problems = append(problems, fmt.Sprintf("provider %q is listed more than once", p.Name))

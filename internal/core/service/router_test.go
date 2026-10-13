@@ -874,6 +874,34 @@ func TestTierLaterTierSkippedOnEmptyAnswer(t *testing.T) {
 	is.Equal(0, rescue.reverseCalls)
 }
 
+// An empty answer is final: within a shared tier it ends the walk just as it
+// does across tiers, and the empty result is cached for the whole cell. This is
+// the contract that makes an ocean point cheap, so the next instance in the
+// tier is never tried.
+func TestEmptyAnswerEndsTheWalkWithinATier(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	empty := reverseGeocoder("empty", nil, nil)
+	next := healthy("next")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 1, Geocoder: empty},
+		Provider{Tier: 1, Geocoder: next},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Empty(got, "the caller gets the genuine empty answer")
+	is.Equal(0, next.reverseCalls, "an empty answer from the first instance ends the walk")
+
+	// The empty answer is cached, so even a fresh lookup does not reach the
+	// next instance.
+	got, err = r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Empty(got)
+	is.Equal(0, next.reverseCalls)
+	is.Equal([]port.CacheOutcome{port.CacheMiss, port.CacheHit}, metrics.cacheOutcomes)
+}
+
 // When every provider in the first tier fails, the lookup falls over to the
 // rescue tier.
 func TestTierLaterTierUsedWhenFirstTierFails(t *testing.T) {

@@ -30,7 +30,9 @@ type Provider struct {
 	// Tier groups providers for rotation: a lookup rotates only among the
 	// providers of the earliest tier that has anyone available, and a later
 	// tier is reached only when every provider before it failed or is out of
-	// quota. Zero means the first tier.
+	// quota. Providers sharing a tier rotate among themselves; a provider
+	// alone in its tier keeps its strict turn. Zero is treated as the first
+	// tier.
 	Tier     int
 	Geocoder port.Geocoder
 	// Limiter paces calls; nil means unpaced.
@@ -38,6 +40,15 @@ type Provider struct {
 	// DailyQuota caps calls over a rolling 24-hour window; zero means
 	// unlimited.
 	DailyQuota int
+}
+
+// InstanceName is the label used in logs and metrics: the configured name,
+// falling back to the provider's own type name when Name is empty.
+func (p Provider) InstanceName() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.Geocoder.Name()
 }
 
 type runtimeProvider struct {
@@ -97,8 +108,9 @@ func WithAttemptTimeout(d time.Duration) Option {
 var _ port.GeocodeService = (*Router)(nil)
 
 // New wires the router. Providers rotate within their tier, earliest tier
-// first. Misconfiguration is a startup failure, so New panics on nil
-// dependencies rather than letting the first request crash.
+// first; a provider alone in its tier is therefore always tried before the next
+// tier. Misconfiguration is a startup failure, so New panics on nil dependencies
+// rather than letting the first request crash.
 func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...Option) *Router {
 	if cache == nil {
 		panic("service.New: nil cache")
@@ -116,10 +128,7 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 		if p.Geocoder == nil {
 			panic("service.New: provider with nil geocoder")
 		}
-		instance := p.Name
-		if instance == "" {
-			instance = p.Geocoder.Name()
-		}
+		instance := p.InstanceName()
 		var quota *quotaCounter
 		if p.DailyQuota > 0 {
 			quota = newQuotaCounter(p.DailyQuota)
@@ -144,10 +153,14 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 // failed or ran out of quota, so a rescue provider never takes a steady share
 // of the traffic.
 func (r *Router) orderedProviders() []runtimeProvider {
-	offset := int(r.cursor.Add(1) - 1)
 	if len(r.providers) < 2 {
 		return r.providers
 	}
+
+	// One lookup consumes one cursor value. Tiers hold different numbers of
+	// providers, so the offset is reduced modulo each tier's size; the modulus
+	// stays in uint64 to keep it in range when the counter wraps.
+	offset := r.cursor.Add(1) - 1
 
 	tiers := make([]int, 0, len(r.providers))
 	seen := make(map[int]bool, len(r.providers))
@@ -167,7 +180,7 @@ func (r *Router) orderedProviders() []runtimeProvider {
 				members = append(members, i)
 			}
 		}
-		start := offset % len(members)
+		start := int(offset % uint64(len(members)))
 		for k := range members {
 			member := members[(start+k)%len(members)]
 			ordered = append(ordered, r.providers[member])

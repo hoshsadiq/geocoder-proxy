@@ -182,7 +182,7 @@ func serve(ctx context.Context, configPath string) error {
 
 	names := make([]string, 0, len(providers))
 	for _, p := range providers {
-		names = append(names, p.Name)
+		names = append(names, p.InstanceName())
 	}
 	logger.Info("listening", "addr", appLn.Addr().String(), "ops_addr", opsLn.Addr().String(), "providers", names)
 
