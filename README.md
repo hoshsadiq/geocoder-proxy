@@ -89,12 +89,15 @@ providers:
     rate_per_second: 1
     daily_quota: 500
     tier: 2
-    user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
+    user_agent: "geocoder-proxy/0.3 (https://github.com/hoshsadiq/geocoder-proxy)"
 ```
 
 A tier's number decides the order, not the position in the file: a provider in
 tier 2 is tried before one in tier 10 even when the tier 10 provider is written
-first. A tier is a set of providers you are happy to have answer the same
+first. A provider with no `tier` still takes a number, its place in the list,
+and startup fails if that number is one another provider sets explicitly. That
+keeps the two meanings apart: either you set a tier on every provider that
+should share one, or you leave the whole file ordered. A tier is a set of providers you are happy to have answer the same
 lookups. Rotation goes by turn, not by speed, so a tier carries its number of
 providers times its slowest member's rate. Four instances paced at one call a
 second carry four lookups a second between them. Add a fifth that is faster,

@@ -74,7 +74,7 @@ providers:
     # A public rescue service: later tier and a small daily quota, so rotation
     # never hands it a steady share of an import.
     # The public instance's usage policy requires an identifying User-Agent.
-    user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
+    user_agent: "geocoder-proxy/0.3 (https://github.com/hoshsadiq/geocoder-proxy)"
     rate_per_second: 1
     daily_quota: 500
     tier: 2
