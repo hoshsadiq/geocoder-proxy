@@ -111,7 +111,8 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 
 // Reverse resolves the places nearest to the query point: cache first, then
 // providers in order. See the package comment for the rules.
-func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.Result, error) {
+func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) (results []domain.Result, err error) {
+	defer func() { r.recordLookup(results, err) }()
 	key := reverseKey(q)
 
 	if entry, ok := r.cache.Get(key); ok {
@@ -124,7 +125,7 @@ func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.R
 		r.metrics.CacheLookup(port.CacheMiss)
 	}
 
-	results, err := callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
+	results, err = callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
 		results, err := g.Reverse(ctx, q)
 		return results, len(results) > 0, err
 	})
@@ -146,7 +147,8 @@ func reverseKey(q domain.ReverseQuery) string {
 // Forward resolves places matching free text. Cached by normalised query
 // text plus the limit; there is no distance rule because forward answers
 // carry no single coordinate to measure against.
-func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.Result, error) {
+func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) (results []domain.Result, err error) {
+	defer func() { r.recordLookup(results, err) }()
 	if len(q.Text) > maxForwardTextBytes {
 		return nil, fmt.Errorf("%w: forward text exceeds %d bytes", domain.ErrInvalidQuery, maxForwardTextBytes)
 	}
@@ -158,7 +160,7 @@ func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	}
 	r.metrics.CacheLookup(port.CacheMiss)
 
-	results, err := callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
+	results, err = callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
 		results, err := g.Forward(ctx, q)
 		return results, len(results) > 0, err
 	})
@@ -186,6 +188,21 @@ func reusable(results []domain.Result, q domain.Coordinates, maxReuse float64) b
 		return true
 	}
 	return q.DistanceTo(results[0].Coordinates) <= maxReuse
+}
+
+// recordLookup counts what the lookup returned to its caller. A caller who hung
+// up before an answer existed is not counted: the service did not fail, and the
+// HTTP layer writes nothing for it.
+func (r *Router) recordLookup(results []domain.Result, err error) {
+	switch {
+	case err == nil && len(results) > 0:
+		r.metrics.Lookup(port.LookupOK)
+	case err == nil:
+		r.metrics.Lookup(port.LookupEmpty)
+	case errors.Is(err, context.Canceled):
+	default:
+		r.metrics.Lookup(port.LookupFailed)
+	}
 }
 
 // attemptContext bounds one provider call; zero disables the cap and returns

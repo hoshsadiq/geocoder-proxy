@@ -120,6 +120,16 @@ providers:
 	is.Equal(9*time.Second, cfg.RequestTimeout, "env beats the file")
 }
 
+// The example file is the shape an operator copies; its timeout values must
+// match the exported defaults the code ships, or the docs drift silently.
+func TestExampleConfigMatchesDefaults(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	cfg, err := Load(filepath.Join("..", "..", "..", "config.example.yaml"), nil)
+	must.NoError(err, "the shipped example must load and validate")
+	is.Equal(DefaultRequestTimeout, cfg.RequestTimeout)
+	is.Equal(DefaultUpstreamTimeout, cfg.UpstreamTimeout)
+}
+
 func TestDefaultTimeouts(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n")

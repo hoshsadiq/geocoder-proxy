@@ -86,9 +86,11 @@ func TestDefaults(t *testing.T) {
 }
 
 // The defaults must leave real failover room: one pace wait plus a capped
-// attempt has to fit in the budget with a second provider still to try.
+// attempt has to fit in the budget with a second provider still to try. The
+// comparison mirrors production's form so it stays correct near the Duration
+// maximum.
 func TestDefaultTimeoutsLeaveFailoverRoom(t *testing.T) {
 	is := assert.New(t)
-	is.LessOrEqual(2*DefaultUpstreamTimeout, DefaultRequestTimeout,
+	is.LessOrEqual(DefaultUpstreamTimeout, DefaultRequestTimeout/2,
 		"the attempt cap must be at most half the budget")
 }

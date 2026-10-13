@@ -21,6 +21,7 @@ type Metrics struct {
 	providerCalls   *prom.CounterVec
 	providerLatency *prom.HistogramVec
 	quotaRemaining  *prom.GaugeVec
+	lookupCalls     *prom.CounterVec
 }
 
 // New registers the metrics on reg (pass prom.DefaultRegisterer in
@@ -55,6 +56,13 @@ func New(reg prom.Registerer) *Metrics {
 			Name:      "provider_quota_remaining",
 			Help:      "Calls left against the provider's daily quota, when one is configured.",
 		}, []string{"provider"}),
+		// Request-level outcome, independent of why providers failed:
+		// sum(rate(geocoder_lookups_total{result="failed"}[5m]))
+		lookupCalls: factory.NewCounterVec(prom.CounterOpts{
+			Namespace: "geocoder",
+			Name:      "lookups_total",
+			Help:      "Lookups by result (ok, empty, failed).",
+		}, []string{"result"}),
 	}
 }
 
@@ -77,4 +85,9 @@ func (m *Metrics) ProviderRequest(provider string, outcome port.ProviderOutcome,
 // QuotaRemaining reports the calls a provider has left today.
 func (m *Metrics) QuotaRemaining(provider string, remaining int) {
 	m.quotaRemaining.WithLabelValues(provider).Set(float64(remaining))
+}
+
+// Lookup records one lookup's result.
+func (m *Metrics) Lookup(result port.LookupResult) {
+	m.lookupCalls.WithLabelValues(string(result)).Inc()
 }

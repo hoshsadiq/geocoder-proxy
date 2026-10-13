@@ -21,8 +21,9 @@ const (
 	// 5s geocoder timeout, so an expired lookup reaches the consumer as a 503
 	// rather than as a client-side timeout.
 	DefaultRequestTimeout = 4 * time.Second
-	// DefaultUpstreamTimeout caps one provider attempt. Half the budget, so a
-	// pace wait plus a capped attempt still leaves room for one failover.
+	// DefaultUpstreamTimeout caps one provider attempt. Half the budget, so
+	// one pace wait plus a capped attempt still leaves room for one failover on
+	// an uncontended lookup.
 	DefaultUpstreamTimeout = 2 * time.Second
 )
 

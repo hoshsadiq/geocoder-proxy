@@ -66,6 +66,7 @@ type providerCall struct {
 type fakeMetrics struct {
 	cacheOutcomes []port.CacheOutcome
 	calls         []providerCall
+	lookups       []port.LookupResult
 }
 
 func (m *fakeMetrics) CacheLookup(outcome port.CacheOutcome) {
@@ -74,6 +75,10 @@ func (m *fakeMetrics) CacheLookup(outcome port.CacheOutcome) {
 
 func (m *fakeMetrics) ProviderRequest(name string, outcome port.ProviderOutcome, _ time.Duration) {
 	m.calls = append(m.calls, providerCall{name: name, outcome: outcome})
+}
+
+func (m *fakeMetrics) Lookup(result port.LookupResult) {
+	m.lookups = append(m.lookups, result)
 }
 
 func (m *fakeMetrics) QuotaRemaining(string, int) {}
@@ -115,6 +120,18 @@ func reverseGeocoder(name string, results []domain.Result, err error) *fakeGeoco
 		},
 		forwardFn: func(context.Context, domain.ForwardQuery) ([]domain.Result, error) {
 			return results, err
+		},
+	}
+}
+
+// reversingOnContext blocks until the caller's context ends and then reports
+// that error, so a test can hold a lookup open for a deadline or a hang-up.
+func reversingOnContext(name string) *fakeGeocoder {
+	return &fakeGeocoder{
+		name: name,
+		reverseFn: func(ctx context.Context, _ domain.ReverseQuery) ([]domain.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
 }
@@ -393,6 +410,90 @@ func TestReverseQuota(t *testing.T) {
 			is.Contains(outcomesOf(metrics), port.ProviderQuotaExhausted)
 		})
 	}
+}
+
+// A lookup the service could not answer must show up as result=failed even when
+// no provider attempt failed: a pacing-exhausted outage leaves every attempt
+// pacing_limited and zero error outcomes, which is the blind spot the
+// request-level counter exists to close.
+func TestLookupResultRecorded(t *testing.T) {
+	answer := []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}
+
+	tests := []struct {
+		name      string
+		providers []Provider
+		reverse   func(ctx context.Context, r *Router) error
+		want      []port.LookupResult
+	}{
+		{
+			name:      "a result is ok",
+			providers: []Provider{{Geocoder: reverseGeocoder("p1", answer, nil)}},
+			want:      []port.LookupResult{port.LookupOK},
+		},
+		{
+			name:      "a genuine nothing-here is empty",
+			providers: []Provider{{Geocoder: reverseGeocoder("p1", nil, nil)}},
+			want:      []port.LookupResult{port.LookupEmpty},
+		},
+		{
+			name:      "provider failure is failed",
+			providers: []Provider{{Geocoder: reverseGeocoder("p1", nil, errBoom)}},
+			want:      []port.LookupResult{port.LookupFailed},
+		},
+		{
+			// Every provider pacing-limited: no provider outcome is an error,
+			// but the caller still got no answer.
+			name: "pacing-exhausted outage is failed",
+			providers: []Provider{
+				{Geocoder: reverseGeocoder("p1", answer, nil), Limiter: fakeLimiter{err: errors.New("would exceed deadline")}},
+			},
+			want: []port.LookupResult{port.LookupFailed},
+		},
+		{
+			name: "no configured provider is failed",
+			want: []port.LookupResult{port.LookupFailed},
+		},
+		{
+			// The budget ended the attempt: the caller got no answer, so the
+			// lookup is failed however the provider outcome is recorded.
+			name:      "a budget-cut lookup is failed",
+			providers: []Provider{{Geocoder: reversingOnContext("p1")}},
+			reverse: func(ctx context.Context, r *Router) error {
+				cut, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+				defer cancel()
+				_, err := r.Reverse(cut, query(cellNear))
+				return err
+			},
+			want: []port.LookupResult{port.LookupFailed},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			metrics := &fakeMetrics{}
+			r := newRouter(newFakeCache(), metrics, tt.providers...)
+
+			if tt.reverse != nil {
+				_ = tt.reverse(t.Context(), r)
+			} else {
+				_, _ = r.Reverse(t.Context(), query(cellNear))
+			}
+			is.Equal(tt.want, metrics.lookups)
+		})
+	}
+}
+
+func TestLookupResultSkipsDepartedCaller(t *testing.T) {
+	is := assert.New(t)
+	metrics := &fakeMetrics{}
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Geocoder: reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)})
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, _ = r.Reverse(cancelled, query(cellNear))
+	is.Empty(metrics.lookups, "a caller who hung up is not the service failing")
 }
 
 func TestReversePacingFailureMovesOn(t *testing.T) {
