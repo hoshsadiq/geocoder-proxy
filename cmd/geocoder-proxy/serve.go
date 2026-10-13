@@ -60,20 +60,24 @@ func withRequestDeadline(next http.Handler, budget time.Duration) http.Handler {
 	})
 }
 
-// buildProviders resolves each configured provider through the registry:
-// the provider allocates its own config, this function decodes the settings
-// into it, the provider validates, and this function assembles the router's
-// view (client, pacing, quota). No provider field name appears here.
-// Every provider's problems are reported together, so one startup lists
-// everything wrong with the configuration.
+// buildProviders resolves each configured provider instance through the
+// registry: the provider allocates its own config, this function decodes the
+// settings into it, the provider validates, and this function assembles the
+// router's view (instance name, tier, client, pacing, quota). No provider field
+// name appears here. Every provider's problems are reported together, so one
+// startup lists everything wrong with the configuration.
 func buildProviders(entries []config.ProviderEntry) ([]service.Provider, error) {
 	providers := make([]service.Provider, 0, len(entries))
 	var problems []string
 
 	for _, entry := range entries {
-		reg, ok := registry.Lookup(entry.Name)
+		providerType := entry.Type
+		if providerType == "" {
+			providerType = entry.Name
+		}
+		reg, ok := registry.Lookup(providerType)
 		if !ok {
-			problems = append(problems, fmt.Sprintf("provider %q is not known (registered: %v)", entry.Name, registry.Names()))
+			problems = append(problems, fmt.Sprintf("provider %q: unknown type %q (registered: %v)", entry.Name, providerType, registry.Names()))
 			continue
 		}
 		cfg := reg.NewConfig()
@@ -91,6 +95,8 @@ func buildProviders(entries []config.ProviderEntry) ([]service.Provider, error) 
 			continue
 		}
 		providers = append(providers, service.Provider{
+			Name:       entry.Name,
+			Tier:       entry.Tier,
 			Geocoder:   geocoder,
 			Limiter:    tokenbucket.New(cfg.Rate()),
 			DailyQuota: cfg.Quota(),
@@ -176,7 +182,7 @@ func serve(ctx context.Context, configPath string) error {
 
 	names := make([]string, 0, len(providers))
 	for _, p := range providers {
-		names = append(names, p.Geocoder.Name())
+		names = append(names, p.Name)
 	}
 	logger.Info("listening", "addr", appLn.Addr().String(), "ops_addr", opsLn.Addr().String(), "providers", names)
 

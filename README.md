@@ -16,7 +16,7 @@ geocoder-proxy serve --config config.yaml
 
 Configuration layers environment (`GEOCODER_*`) over a YAML file (`--config` or
 `GEOCODER_CONFIG`) over defaults. Provider API keys come from the environment
-(`GEOCODER_PROVIDER_<NAME>_API_KEY`), never from a committed file.
+(`GEOCODER_PROVIDER_<instance>_API_KEY`), never from a committed file.
 [config.example.yaml](config.example.yaml) lists every key.
 
 The Photon API listens on `:8080` (`/reverse`, `/api`); health and Prometheus
@@ -44,16 +44,58 @@ pushing a provider past its limit. AGENTS.md has the detail.
   hundreds.
 - Paces each provider per second and counts daily calls against its quota,
   moving to the next provider when one is throttled, out of quota, or down.
+- Rotates between providers, so several instances share the load instead of one
+  doing all the work until its quota runs out.
 - Never returns an empty result to hide a failure. An empty answer means a
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
 - Exposes Prometheus metrics for cache hits, per-provider latency, errors and
   remaining quota.
 
-Providers are registered by name: `chibigeo` (which is Photon-shaped, so it
+Providers are registered by type: `chibigeo` (which is Photon-shaped, so it
 fronts any Photon-compatible upstream), `geoapify`, `locationiq` and
 `nominatim`. A new one is a package that registers itself, plus one blank
 import.
+
+## Several providers and rotation
+
+You can list several providers, and more than one instance of the same type.
+Every entry has a `name`; `type` names the provider to use and defaults to the
+name, so you only set it when the same type appears more than once:
+
+```yaml
+providers:
+  - name: chibi-eu
+    type: chibigeo
+    rate_per_second: 1
+    daily_quota: 2500
+  - name: chibi-us
+    type: chibigeo
+    rate_per_second: 1
+    daily_quota: 2500
+  - name: nominatim
+    rate_per_second: 1
+    daily_quota: 500
+    tier: 2
+    user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
+```
+
+Lookups rotate between the providers that can serve them, so the next lookup
+starts at the next provider rather than waiting behind the first. Four
+providers paced at one call a second carry about four lookups a second between
+them, instead of the one-a-second the first provider allows on its own. Each
+provider still keeps its own pace and its own daily quota, and when the chosen
+one fails or is out of quota the lookup moves on.
+
+A `tier` groups providers and changes who is in the rotation. While any
+provider in the first tier can answer, providers in later tiers are left alone;
+they are reached only once everything before them has failed or run out of
+quota. That is where a public service such as Nominatim or komoot's demo Photon
+belongs, with a small daily quota, so it acts as an occasional rescue and never
+as the thing carrying a bulk import.
+
+The `provider` label on the metrics and in the logs is the instance `name`, so
+two instances of one type show up separately.
 
 ## Getting started
 

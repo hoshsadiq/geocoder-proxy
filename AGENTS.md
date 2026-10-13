@@ -64,6 +64,12 @@ A provider is fully self-contained: its `Config` struct (koanf tags, `Validate()
 
 Then add one blank import to `internal/adapter/secondary/provider/all/` and one row to `providerKeys` in `all/all_test.go`: the only two edits outside the new package.
 
+### Several instances and tiers
+
+A provider type can appear more than once in `providers`. Each entry carries a unique `name`; `type` names the registered provider and defaults to `name`, so the registry stays keyed by type and the composition root resolves a (name, type) pair into `service.Provider{Name, Tier, ...}`. The router labels metrics and logs with the instance name, so two instances of one type stay apart.
+
+Lookups rotate: `Router.orderedProviders` ring-rotates the providers within each tier, tiers in order, so successive lookups start at a different provider instead of queueing behind the first. `Provider.Tier` groups them (1-based; 0 is treated as 1), and a later tier is reached only after every provider before it failed or ran out of quota, which keeps a small-quota public rescue service from taking a steady share of a bulk import. Quota and pacing stay per instance.
+
 ### Conventions
 
 - **Compile-time interface guards.** Every adapter carries `var _ port.Geocoder = (*Client)(nil)` next to the type. Silent interface drift must be a build failure.

@@ -63,10 +63,16 @@ type providerCall struct {
 	outcome port.ProviderOutcome
 }
 
+type quotaCall struct {
+	name      string
+	remaining int
+}
+
 type fakeMetrics struct {
 	cacheOutcomes []port.CacheOutcome
 	calls         []providerCall
 	lookups       []port.LookupResult
+	quotas        []quotaCall
 }
 
 func (m *fakeMetrics) CacheLookup(outcome port.CacheOutcome) {
@@ -81,7 +87,9 @@ func (m *fakeMetrics) Lookup(result port.LookupResult) {
 	m.lookups = append(m.lookups, result)
 }
 
-func (m *fakeMetrics) QuotaRemaining(string, int) {}
+func (m *fakeMetrics) QuotaRemaining(name string, remaining int) {
+	m.quotas = append(m.quotas, quotaCall{name: name, remaining: remaining})
+}
 
 type fakeLimiter struct {
 	err   error
@@ -94,6 +102,17 @@ func (l fakeLimiter) Wait(ctx context.Context) error {
 		return ctx.Err()
 	}
 	return l.err
+}
+
+// countingLimiter admits every call and counts the waits, so a test can see
+// that each instance paces through its own limiter.
+type countingLimiter struct {
+	waits int
+}
+
+func (l *countingLimiter) Wait(context.Context) error {
+	l.waits++
+	return nil
 }
 
 var errBoom = errors.New("upstream exploded")
@@ -143,13 +162,16 @@ func newRouter(cache *fakeCache, metrics *fakeMetrics, providers ...Provider) *R
 }
 
 // cellNear sits 5.7 m from the answer (inside the 25 m reuse distance);
-// cellFar sits 33.4 m away in the same cell (outside it); otherCell is a
-// different cell entirely.
+// cellFar sits 33.4 m away in the same cell (outside it); otherCell, cellThird
+// and cellFourth are different cells again, so a sequence of lookups can never
+// be served from the cache.
 var (
 	cellAnswer = coords(51.47740, -0.06100)
 	cellNear   = coords(51.47745, -0.06098)
 	cellFar    = coords(51.47770, -0.06100)
 	otherCell  = coords(51.47830, -0.06140)
+	cellThird  = coords(51.47900, -0.06000)
+	cellFourth = coords(51.48000, -0.05800)
 )
 
 // coords builds valid Coordinates for the fixtures; the literals are all in
@@ -172,6 +194,16 @@ func outcomesOf(m *fakeMetrics) []port.ProviderOutcome {
 		outcomes = append(outcomes, c.outcome)
 	}
 	return outcomes
+}
+
+// providerNames is the provider label of every recorded attempt, in order, so a
+// test can see which instance the router picked.
+func providerNames(m *fakeMetrics) []string {
+	names := make([]string, 0, len(m.calls))
+	for _, c := range m.calls {
+		names = append(names, c.name)
+	}
+	return names
 }
 
 func TestReverseCacheReuse(t *testing.T) {
@@ -363,28 +395,34 @@ func TestReverseKeys(t *testing.T) {
 }
 
 func TestReverseQuota(t *testing.T) {
+	answer := []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}
 	tests := []struct {
-		name          string
-		providers     []Provider
-		wantCalls     []int
-		wantSecondErr error
+		name        string
+		providers   []Provider
+		lookups     []domain.Coordinates // distinct cells, so the cache never serves one
+		wantCalls   []int
+		wantLastErr error
 	}{
 		{
+			// Rotation starts at p1, then p2, then p1 again; the third lookup
+			// finds p1 out of quota and falls over to p2.
 			name: "exhaustion falls over to the next provider",
 			providers: []Provider{
-				{Geocoder: reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil), DailyQuota: 1},
-				{Geocoder: reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)},
+				{Geocoder: reverseGeocoder("p1", answer, nil), DailyQuota: 1},
+				{Geocoder: reverseGeocoder("p2", answer, nil)},
 			},
-			wantCalls:     []int{1, 1},
-			wantSecondErr: nil,
+			lookups:     []domain.Coordinates{cellNear, otherCell, cellThird},
+			wantCalls:   []int{1, 2},
+			wantLastErr: nil,
 		},
 		{
 			name: "all quotas exhausted is an error",
 			providers: []Provider{
-				{Geocoder: reverseGeocoder("p1", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil), DailyQuota: 1},
+				{Geocoder: reverseGeocoder("p1", answer, nil), DailyQuota: 1},
 			},
-			wantCalls:     []int{1},
-			wantSecondErr: domain.ErrAllProvidersFailed,
+			lookups:     []domain.Coordinates{cellNear, otherCell},
+			wantCalls:   []int{1},
+			wantLastErr: domain.ErrAllProvidersFailed,
 		},
 	}
 
@@ -394,13 +432,13 @@ func TestReverseQuota(t *testing.T) {
 			cache, metrics := newFakeCache(), &fakeMetrics{}
 			r := newRouter(cache, metrics, tt.providers...)
 
-			// Two distinct cells, so the cache cannot serve the second call.
-			_, err := r.Reverse(t.Context(), query(cellNear))
-			must.NoError(err)
-			_, err = r.Reverse(t.Context(), query(otherCell))
-			if tt.wantSecondErr != nil {
+			var err error
+			for _, cell := range tt.lookups {
+				_, err = r.Reverse(t.Context(), query(cell))
+			}
+			if tt.wantLastErr != nil {
 				must.Error(err)
-				must.ErrorIs(err, tt.wantSecondErr)
+				must.ErrorIs(err, tt.wantLastErr)
 			} else {
 				must.NoError(err)
 			}
@@ -695,7 +733,9 @@ func TestForward(t *testing.T) {
 			must.NoError(err)
 			must.Len(got, tt.wantLen)
 			if tt.upstreamErr == nil {
-				is.Equal(tt.wantCalls, p1.forwardCalls)
+				// Which provider serves depends on rotation; the total call
+				// count is what this test is about.
+				is.Equal(tt.wantCalls, p1.forwardCalls+p2.forwardCalls)
 			} else {
 				is.Equal(1, p1.forwardCalls)
 				is.Equal(tt.wantCalls, p2.forwardCalls)
@@ -724,4 +764,219 @@ func TestNewPanicsOnNilDependencies(t *testing.T) {
 	must.Panics(func() { New(nil, &fakeMetrics{}, nil) })
 	must.Panics(func() { New(newFakeCache(), nil, nil) })
 	must.Panics(func() { New(newFakeCache(), &fakeMetrics{}, []Provider{{}}) })
+}
+
+// healthy is a fake provider that answers every lookup with one result.
+func healthy(name string) *fakeGeocoder {
+	return reverseGeocoder(name, []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
+}
+
+// Two instances of one provider type are separate identities: rotation gives
+// each a share across successive lookups, and the provider metric label is the
+// configured instance name, not the type.
+func TestReverseRotatesAcrossInstances(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	// Both geocoders answer to the same type name; only the configured
+	// instance name tells them apart.
+	eu, us := healthy("chibigeo"), healthy("chibigeo")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Name: "chibi-eu", Geocoder: eu},
+		Provider{Name: "chibi-us", Geocoder: us},
+	)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell, cellThird} {
+		got, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+		must.Len(got, 1)
+	}
+	is.Equal(2, eu.reverseCalls)
+	is.Equal(1, us.reverseCalls)
+	is.Equal([]string{"chibi-eu", "chibi-us", "chibi-eu"}, providerNames(metrics))
+}
+
+// Rotation is fair: four instances of one type each start a lookup in turn, so
+// four providers paced at 1/s carry four lookups a second instead of three
+// sitting idle behind the first.
+func TestReverseRotationIsFair(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	names := []string{"a", "b", "c", "d"}
+	geocoders := make([]*fakeGeocoder, 0, len(names))
+	providers := make([]Provider, 0, len(names))
+	for _, name := range names {
+		g := healthy(name)
+		geocoders = append(geocoders, g)
+		providers = append(providers, Provider{Geocoder: g})
+	}
+	r := newRouter(newFakeCache(), metrics, providers...)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell, cellThird, cellFourth} {
+		_, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+	}
+	for i, g := range geocoders {
+		is.Equal(1, g.reverseCalls, "provider %q", names[i])
+	}
+	is.Equal(names, providerNames(metrics), "successive lookups start at each instance in turn")
+}
+
+// With no configured instance name the provider's own name is the label, so a
+// single entry keeps behaving as before.
+func TestProviderNameFallsBackToGeocoderName(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	r := newRouter(newFakeCache(), metrics, Provider{Geocoder: healthy("chibigeo")})
+
+	_, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Equal([]string{"chibigeo"}, providerNames(metrics))
+}
+
+// The first tier carries the traffic: while any of its providers can answer,
+// nothing in a later tier is called. The public rescue services must never take
+// a steady share of an import.
+func TestTierLaterTierUntouchedWhileFirstTierAvailable(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	t1a, t1b, rescue := healthy("t1-a"), healthy("t1-b"), healthy("rescue")
+	// The rescue provider is listed first on purpose: grouping by tier, not by
+	// config order, is what keeps it out of the rotation.
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 2, Geocoder: rescue},
+		Provider{Tier: 1, Geocoder: t1a},
+		Provider{Tier: 1, Geocoder: t1b},
+	)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell, cellThird} {
+		_, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+	}
+	is.Equal(0, rescue.reverseCalls, "the rescue provider takes no share while tier 1 answers")
+	is.Equal(2, t1a.reverseCalls)
+	is.Equal(1, t1b.reverseCalls)
+}
+
+// A genuine "nothing here" is an answer, so the later tier stays untouched.
+func TestTierLaterTierSkippedOnEmptyAnswer(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	empty := reverseGeocoder("empty", nil, nil)
+	rescue := healthy("rescue")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 2, Geocoder: rescue},
+		Provider{Tier: 1, Geocoder: empty},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Empty(got, "the caller gets the genuine empty answer")
+	is.Equal(0, rescue.reverseCalls)
+}
+
+// When every provider in the first tier fails, the lookup falls over to the
+// rescue tier.
+func TestTierLaterTierUsedWhenFirstTierFails(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	t1a := reverseGeocoder("t1-a", nil, errBoom)
+	t1b := reverseGeocoder("t1-b", nil, errBoom)
+	rescue := healthy("rescue")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 2, Geocoder: rescue},
+		Provider{Tier: 1, Geocoder: t1a},
+		Provider{Tier: 1, Geocoder: t1b},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal(1, rescue.reverseCalls)
+	is.Equal([]port.ProviderOutcome{port.ProviderError, port.ProviderError, port.ProviderSuccess}, outcomesOf(metrics))
+}
+
+// When every provider in the first tier is out of quota, the lookup falls over
+// to the rescue tier even though no attempt failed.
+func TestTierLaterTierUsedWhenFirstTierOutOfQuota(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	t1a, t1b, rescue := healthy("t1-a"), healthy("t1-b"), healthy("rescue")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 2, Geocoder: rescue},
+		Provider{Tier: 1, Geocoder: t1a, DailyQuota: 1},
+		Provider{Tier: 1, Geocoder: t1b, DailyQuota: 1},
+	)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell, cellThird} {
+		_, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+	}
+	is.Equal(1, rescue.reverseCalls, "the third lookup finds tier 1 spent and falls over")
+	is.Contains(outcomesOf(metrics), port.ProviderQuotaExhausted)
+	is.Equal(1, t1a.reverseCalls)
+	is.Equal(1, t1b.reverseCalls)
+}
+
+// Failover stays inside a tier before the next tier is reached.
+func TestTierFailoverStaysWithinTier(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	t1a := reverseGeocoder("t1-a", nil, errBoom)
+	t1b := healthy("t1-b")
+	rescue := healthy("rescue")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 2, Geocoder: rescue},
+		Provider{Tier: 1, Geocoder: t1a},
+		Provider{Tier: 1, Geocoder: t1b},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal(1, t1b.reverseCalls)
+	is.Equal(0, rescue.reverseCalls, "tier 1 still had a provider to try")
+}
+
+// Quota is per instance: each counter is independent and reports under the
+// instance name.
+func TestQuotaIsPerInstance(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	eu, us := healthy("chibigeo"), healthy("chibigeo")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Name: "chibi-eu", Geocoder: eu, DailyQuota: 1},
+		Provider{Name: "chibi-us", Geocoder: us, DailyQuota: 1},
+	)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell} {
+		_, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+	}
+	is.Equal(1, eu.reverseCalls)
+	is.Equal(1, us.reverseCalls)
+	is.Contains(metrics.quotas, quotaCall{name: "chibi-eu", remaining: 0})
+	is.Contains(metrics.quotas, quotaCall{name: "chibi-us", remaining: 0})
+
+	// Both instances are now spent: no provider is left to answer.
+	_, err := r.Reverse(t.Context(), query(cellThird))
+	must.ErrorIs(err, domain.ErrAllProvidersFailed)
+}
+
+// Pacing is per instance: each instance waits on its own limiter.
+func TestPacingIsPerInstance(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	eu, us := healthy("chibigeo"), healthy("chibigeo")
+	euLimiter, usLimiter := &countingLimiter{}, &countingLimiter{}
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Name: "chibi-eu", Geocoder: eu, Limiter: euLimiter},
+		Provider{Name: "chibi-us", Geocoder: us, Limiter: usLimiter},
+	)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell} {
+		_, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+	}
+	is.Equal(1, euLimiter.waits)
+	is.Equal(1, usLimiter.waits)
 }

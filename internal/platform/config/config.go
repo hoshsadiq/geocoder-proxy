@@ -55,12 +55,21 @@ type Cache struct {
 	MaxReuseDistance float64
 }
 
-// ProviderEntry names a provider and carries its settings undecoded. The
-// settings map is handed to the provider's own config type; its keys are
-// the provider's business, not this package's.
+// ProviderEntry names one provider instance and carries its settings
+// undecoded. The settings map is handed to the provider's own config type; its
+// keys are the provider's business, not this package's.
 type ProviderEntry struct {
-	// Name is a registry key (chibigeo, geoapify, locationiq, nominatim).
+	// Name is the instance's own name, unique across the configuration. It
+	// is what metrics and logs show, so two instances of one type stay
+	// distinguishable.
 	Name string
+	// Type is the registry key (chibigeo, geoapify, locationiq, nominatim).
+	// It defaults to Name, so a single instance of a type needs no Type.
+	Type string
+	// Tier groups providers for rotation: lookups rotate only among the
+	// providers of the earliest tier that has anyone available, and a later
+	// tier is rescue only. 1 is the first tier and the default.
+	Tier int
 	// Settings are the provider's own keys, as read from the file and
 	// overridden by GEOCODER_PROVIDER_<NAME>_<FIELD>.
 	Settings map[string]any
@@ -131,6 +140,9 @@ func (c Config) Validate() error {
 			problems = append(problems, fmt.Sprintf("provider %q is listed more than once", p.Name))
 		}
 		seen[p.Name] = true
+		if p.Tier < 1 {
+			problems = append(problems, fmt.Sprintf("provider %q: tier must be a positive integer", p.Name))
+		}
 	}
 
 	if len(problems) > 0 {

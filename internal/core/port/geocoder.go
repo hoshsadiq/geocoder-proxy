@@ -23,7 +23,10 @@ import (
 //     canonicalises names from the code so failover cannot fragment country
 //     attribution downstream.
 type Geocoder interface {
-	// Name identifies the provider in config, logs and metric labels.
+	// Name identifies the provider type, the registry key it registered under.
+	// Telemetry labels use the configured instance name instead, so several
+	// instances of one type stay apart; the router falls back to this name when
+	// an instance has none.
 	Name() string
 
 	// Reverse resolves the places nearest to the query point, nearest first
