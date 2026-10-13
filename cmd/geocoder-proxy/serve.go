@@ -49,6 +49,17 @@ func newServeCmd() *zulu.Command {
 	return cmd
 }
 
+// withRequestDeadline gives each lookup the request budget: the handler's
+// context carries it, so the provider chain cannot outlive it, and the
+// handler turns the expiry into the 503 the caller retries.
+func withRequestDeadline(next http.Handler, budget time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), budget)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // buildProviders resolves each configured provider through the registry:
 // the provider allocates its own config, this function decodes the settings
 // into it, the provider validates, and this function assembles the router's
@@ -124,7 +135,9 @@ func serve(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	router := service.New(cache, metrics, providers, service.WithMaxReuseDistance(cfg.Cache.MaxReuseDistance))
+	router := service.New(cache, metrics, providers,
+		service.WithMaxReuseDistance(cfg.Cache.MaxReuseDistance),
+		service.WithAttemptTimeout(cfg.UpstreamTimeout))
 	handler := photonprimary.New(router, display.English.Regions(), logger)
 
 	// Bind before announcing anything: a listener that fails to bind fails
@@ -141,11 +154,11 @@ func serve(ctx context.Context, configPath string) error {
 	}
 
 	var draining atomic.Bool
-	// WriteTimeout must exceed the worst-case failover chain (providers x
-	// (client timeout x retries + backoff)); 30s was measured below a single
-	// hanging provider's 31.6s.
+	// WriteTimeout is a backstop, not the lookup budget: the request budget
+	// ends a slow lookup long before it, and this only stops a runaway from
+	// holding a connection for minutes.
 	app := &http.Server{
-		Handler:           handler,
+		Handler:           withRequestDeadline(handler, cfg.RequestTimeout),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       60 * time.Second,

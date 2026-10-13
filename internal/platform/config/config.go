@@ -20,7 +20,13 @@ type Config struct {
 	ListenAddr string
 	// OpsAddr is the health/metrics listener address.
 	OpsAddr string
-	Cache   Cache
+	// RequestTimeout is the per-request budget. A lookup still unanswered when
+	// it runs out is answered 503, not left to the caller's own timeout.
+	RequestTimeout time.Duration
+	// UpstreamTimeout caps one provider attempt, so a single slow provider
+	// cannot consume the whole request budget before failover.
+	UpstreamTimeout time.Duration
+	Cache           Cache
 	// Providers are tried in order.
 	Providers []ProviderEntry
 }
@@ -52,6 +58,10 @@ func defaults() Config {
 	return Config{
 		ListenAddr: ":8080",
 		OpsAddr:    ":9090",
+		// The default upstream cap sits below the default budget, so one slow
+		// provider leaves room for failover.
+		RequestTimeout:  4 * time.Second,
+		UpstreamTimeout: 3 * time.Second,
 		Cache: Cache{
 			TTL:              30 * 24 * time.Hour,
 			MaxEntries:       100_000,
@@ -74,6 +84,14 @@ func (c Config) Validate() error {
 	}
 	if c.ListenAddr != "" && c.ListenAddr == c.OpsAddr {
 		problems = append(problems, "listen and ops addresses must differ")
+	}
+	if c.RequestTimeout <= 0 {
+		problems = append(problems, "request_timeout must be a positive duration")
+	}
+	if c.UpstreamTimeout <= 0 {
+		problems = append(problems, "upstream_timeout must be a positive duration")
+	} else if c.UpstreamTimeout > c.RequestTimeout {
+		problems = append(problems, "upstream_timeout must not exceed request_timeout")
 	}
 	if c.Cache.MaxReuseDistance <= 0 || math.IsNaN(c.Cache.MaxReuseDistance) || math.IsInf(c.Cache.MaxReuseDistance, 0) {
 		problems = append(problems, "cache.max_reuse_distance must be a finite positive number")

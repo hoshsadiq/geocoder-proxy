@@ -30,6 +30,8 @@ const providerEnvPrefix = EnvPrefix + "PROVIDER_"
 var scalarEnv = map[string]string{
 	"GEOCODER_LISTEN_ADDR":              "listen_addr",
 	"GEOCODER_OPS_ADDR":                 "ops_addr",
+	"GEOCODER_REQUEST_TIMEOUT":          "request_timeout",
+	"GEOCODER_UPSTREAM_TIMEOUT":         "upstream_timeout",
 	"GEOCODER_CACHE_TTL":                "cache.ttl",
 	"GEOCODER_CACHE_MAX_ENTRIES":        "cache.max_entries",
 	"GEOCODER_CACHE_MAX_REUSE_DISTANCE": "cache.max_reuse_distance",
@@ -38,10 +40,12 @@ var scalarEnv = map[string]string{
 // raw mirrors the file and env shape. Providers stay undecoded: each entry
 // is a name plus that provider's own keys.
 type raw struct {
-	ListenAddr string           `koanf:"listen_addr"`
-	OpsAddr    string           `koanf:"ops_addr"`
-	Cache      rawCache         `koanf:"cache"`
-	Providers  []map[string]any `koanf:"providers"`
+	ListenAddr      string           `koanf:"listen_addr"`
+	OpsAddr         string           `koanf:"ops_addr"`
+	RequestTimeout  string           `koanf:"request_timeout"`
+	UpstreamTimeout string           `koanf:"upstream_timeout"`
+	Cache           rawCache         `koanf:"cache"`
+	Providers       []map[string]any `koanf:"providers"`
 }
 
 type rawCache struct {
@@ -60,8 +64,10 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 	// Loading a static confmap cannot fail; the file load below is the one
 	// that surfaces errors.
 	_ = k.Load(confmap.Provider(map[string]any{
-		"listen_addr": d.ListenAddr,
-		"ops_addr":    d.OpsAddr,
+		"listen_addr":      d.ListenAddr,
+		"ops_addr":         d.OpsAddr,
+		"request_timeout":  d.RequestTimeout.String(),
+		"upstream_timeout": d.UpstreamTimeout.String(),
 		"cache": map[string]any{
 			"ttl":                d.Cache.TTL.String(),
 			"max_entries":        d.Cache.MaxEntries,
@@ -114,6 +120,20 @@ func Load(path string, flagOverrides map[string]any) (Config, error) {
 			return Config{}, fmt.Errorf("cache.ttl: %w", err)
 		}
 		cfg.Cache.TTL = ttl
+	}
+	if r.RequestTimeout != "" {
+		requestTimeout, err := time.ParseDuration(r.RequestTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("request_timeout: %w", err)
+		}
+		cfg.RequestTimeout = requestTimeout
+	}
+	if r.UpstreamTimeout != "" {
+		upstreamTimeout, err := time.ParseDuration(r.UpstreamTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("upstream_timeout: %w", err)
+		}
+		cfg.UpstreamTimeout = upstreamTimeout
 	}
 
 	cfg.Providers = providerEntries(r.Providers)

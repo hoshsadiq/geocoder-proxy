@@ -426,6 +426,32 @@ func TestReverseContextCancelledDuringPacing(t *testing.T) {
 	must.Equal(0, p1.reverseCalls)
 }
 
+func TestReverseAttemptTimeoutFailsOver(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	hanging := &fakeGeocoder{
+		name: "p1",
+		reverseFn: func(ctx context.Context, _ domain.ReverseQuery) ([]domain.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	healthy := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
+	r := New(newFakeCache(), metrics,
+		[]Provider{{Geocoder: hanging}, {Geocoder: healthy}},
+		WithAttemptTimeout(50*time.Millisecond),
+	)
+
+	start := time.Now()
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal(1, healthy.reverseCalls)
+	is.Less(time.Since(start), 2*time.Second, "the hanging attempt is capped, not waited out")
+	is.Equal([]port.ProviderOutcome{port.ProviderError, port.ProviderSuccess}, outcomesOf(metrics),
+		"a capped attempt is recorded as a provider error, so the error-rate alert sees it")
+}
+
 func TestReverseContextCancelledDuringProviderCall(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	metrics := &fakeMetrics{}

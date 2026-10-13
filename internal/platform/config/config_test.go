@@ -29,6 +29,10 @@ func TestValidate(t *testing.T) {
 		{name: "infinite reuse distance", mutate: func(c *Config) { c.Cache.MaxReuseDistance = math.Inf(1) }, wantErr: "max_reuse_distance"},
 		{name: "negative ttl", mutate: func(c *Config) { c.Cache.TTL = -time.Hour }, wantErr: "cache.ttl"},
 		{name: "negative max entries", mutate: func(c *Config) { c.Cache.MaxEntries = -5 }, wantErr: "max_entries"},
+		{name: "zero request timeout", mutate: func(c *Config) { c.RequestTimeout = 0 }, wantErr: "request_timeout"},
+		{name: "negative request timeout", mutate: func(c *Config) { c.RequestTimeout = -time.Second }, wantErr: "request_timeout"},
+		{name: "zero upstream timeout", mutate: func(c *Config) { c.UpstreamTimeout = 0 }, wantErr: "upstream_timeout"},
+		{name: "upstream timeout above the budget", mutate: func(c *Config) { c.UpstreamTimeout = c.RequestTimeout + time.Second }, wantErr: "must not exceed"},
 		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, entry("chibigeo")) }, wantErr: "more than once"},
 		{name: "empty provider name", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: ""}} }, wantErr: "name is empty"},
 		// Provider settings are deliberately not checked here: they belong
@@ -76,4 +80,6 @@ func TestDefaults(t *testing.T) {
 	is.Equal(30*24*time.Hour, d.Cache.TTL)
 	is.Equal(100_000, d.Cache.MaxEntries)
 	is.InDelta(25, d.Cache.MaxReuseDistance, 0.0001)
+	is.Equal(4*time.Second, d.RequestTimeout)
+	is.Equal(3*time.Second, d.UpstreamTimeout, "the default attempt cap sits below the default budget")
 }

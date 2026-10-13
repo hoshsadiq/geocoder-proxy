@@ -4,6 +4,7 @@
 package photon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -133,6 +134,12 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, results []doma
 			// Provider error text is coordinate-free by contract, so it is
 			// safe to log.
 			h.logger.WarnContext(r.Context(), "all providers failed", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
+		case errors.Is(r.Context().Err(), context.DeadlineExceeded):
+			// The request budget ran out with no answer. A server-imposed
+			// deadline is not a departed caller: answer 503, the one failure
+			// the geocoder gem retries. No payload in the log (PII rule).
+			h.logger.WarnContext(r.Context(), "request budget exceeded")
 			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
 		case r.Context().Err() != nil:
 			// The caller is gone; writing a status nobody reads only adds a

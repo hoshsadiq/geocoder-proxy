@@ -37,10 +37,11 @@ type runtimeProvider struct {
 // Router implements port.GeocodeService over a cache and an ordered list of
 // providers. The zero Router is not usable; build it with New.
 type Router struct {
-	cache    port.Cache
-	metrics  port.Metrics
-	now      func() time.Time
-	maxReuse float64
+	cache          port.Cache
+	metrics        port.Metrics
+	now            func() time.Time
+	maxReuse       float64
+	attemptTimeout time.Duration
 
 	providers []runtimeProvider
 }
@@ -60,6 +61,13 @@ func WithMaxReuseDistance(metres float64) Option {
 // WithClock overrides the time source, for tests.
 func WithClock(now func() time.Time) Option {
 	return func(r *Router) { r.now = now }
+}
+
+// WithAttemptTimeout caps one provider attempt, so a slow provider fails over
+// to the next instead of consuming the whole request budget. Zero disables the
+// per-attempt cap.
+func WithAttemptTimeout(d time.Duration) Option {
+	return func(r *Router) { r.attemptTimeout = d }
 }
 
 // Compile-time guard: the router is the incoming port's implementation.
@@ -112,7 +120,7 @@ func (r *Router) Reverse(ctx context.Context, q domain.ReverseQuery) ([]domain.R
 		r.metrics.CacheLookup(port.CacheMiss)
 	}
 
-	results, err := callProviders(ctx, r, func(g port.Geocoder) ([]domain.Result, bool, error) {
+	results, err := callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
 		results, err := g.Reverse(ctx, q)
 		return results, len(results) > 0, err
 	})
@@ -146,7 +154,7 @@ func (r *Router) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	}
 	r.metrics.CacheLookup(port.CacheMiss)
 
-	results, err := callProviders(ctx, r, func(g port.Geocoder) ([]domain.Result, bool, error) {
+	results, err := callProviders(ctx, r, func(ctx context.Context, g port.Geocoder) ([]domain.Result, bool, error) {
 		results, err := g.Forward(ctx, q)
 		return results, len(results) > 0, err
 	})
@@ -176,13 +184,22 @@ func reusable(results []domain.Result, q domain.Coordinates, maxReuse float64) b
 	return q.DistanceTo(results[0].Coordinates) <= maxReuse
 }
 
+// attemptContext bounds one provider call; zero disables the cap and returns
+// the caller's context unchanged.
+func (r *Router) attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if r.attemptTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, r.attemptTimeout)
+}
+
 // callProviders tries each provider in order until one answers. It is the
 // home of the never-blank rule: provider errors are collected and surfaced
 // as ErrAllProvidersFailed, never converted into an empty answer. found only
 // drives the success-vs-empty metric outcome; an empty answer is still an
 // answer. Free function rather than a method because Go methods cannot be
 // generic.
-func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geocoder) (T, bool, error)) (T, error) {
+func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Context, port.Geocoder) (T, bool, error)) (T, error) {
 	var zero T
 	if len(r.providers) == 0 {
 		return zero, domain.ErrNoProviders
@@ -220,7 +237,9 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(port.Geoco
 		}
 
 		start := r.now()
-		result, found, err := lookup(p.Geocoder)
+		attemptCtx, cancel := r.attemptContext(ctx)
+		result, found, err := lookup(attemptCtx, p.Geocoder)
+		cancel()
 		d := r.now().Sub(start)
 		if p.quota != nil {
 			r.metrics.QuotaRemaining(name, p.quota.remaining(r.now()))
