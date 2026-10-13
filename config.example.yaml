@@ -38,6 +38,11 @@ cache:
 # rescue service belongs. Leave `tier` out and each provider stands on its own,
 # tried in the order written.
 #
+# The tier number decides the order, not where the entry is written: tier 2 is
+# tried before tier 10 either way. A tier is a whole number from 1 to 1000000,
+# and an entry with no tier must not land on a number another entry sets
+# explicitly; that fails startup naming both providers.
+#
 # Every entry needs a `name`, unique in this list. `type` names the provider to
 # use and defaults to `name`, so set it only when the same type appears more
 # than once. rate_per_second paces calls and daily_quota caps them over a

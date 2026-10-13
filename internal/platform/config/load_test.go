@@ -110,16 +110,27 @@ func TestLoadRejectsMalformedTier(t *testing.T) {
 	}
 }
 
-// An out-of-range number is not a tier. Go saturates a float-to-int conversion
-// at the integer limits, so 1e300 would otherwise arrive as the largest tier.
+// A positive number above the bound is not a "positive integer" problem, so it
+// gets its own message naming the bound. Go saturates a float-to-int
+// conversion, so 1e300 would otherwise arrive as the largest tier.
 func TestLoadRejectsOutOfRangeTier(t *testing.T) {
-	for _, tier := range []string{".inf", "-.inf", ".nan", "1e300"} {
-		t.Run(tier, func(t *testing.T) {
+	tests := []struct {
+		tier string
+		want string
+	}{
+		{tier: ".inf", want: "tier must be at most 1000000"},
+		{tier: "1e300", want: "tier must be at most 1000000"},
+		{tier: "1000001", want: "tier must be at most 1000000"},
+		{tier: "-.inf", want: "tier must be a positive integer"},
+		{tier: ".nan", want: "tier must be a positive integer"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tier, func(t *testing.T) {
 			must := require.New(t)
-			path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n    tier: "+tier+"\n")
+			path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n    tier: "+tt.tier+"\n")
 			_, err := Load(path, nil)
 			must.Error(err)
-			must.ErrorContains(err, "tier must be a positive integer")
+			must.ErrorContains(err, tt.want)
 		})
 	}
 }
@@ -156,6 +167,54 @@ providers:
 	must.Len(cfg.Providers, 2)
 	is.Equal(1, cfg.Providers[0].Tier)
 	is.Equal(2, cfg.Providers[1].Tier, "the second provider is its own tier, after the first")
+}
+
+// A tier the loader assigns by position must not silently take the number
+// another entry set explicitly: the two would rotate, and the one written
+// second would stop being a fallback.
+func TestLoadRejectsTierCollision(t *testing.T) {
+	must := require.New(t)
+	path := writeYAML(t, `
+providers:
+  - name: first
+    rate_per_second: 1
+  - name: second
+    rate_per_second: 1
+  - name: third
+    rate_per_second: 1
+    tier: 2
+`)
+
+	_, err := Load(path, nil)
+	must.Error(err)
+	must.ErrorContains(err, `provider "second" has no tier`)
+	must.ErrorContains(err, "tier it takes (2)")
+	must.ErrorContains(err, `provider "third"`)
+}
+
+// The mixed shape still works when the written tiers do not land on a
+// provider's own position: two providers rotate, the untiered one keeps its
+// turn after them.
+func TestLoadAllowsMixedExplicitAndImplicitTiers(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, `
+providers:
+  - name: a
+    rate_per_second: 1
+    tier: 1
+  - name: b
+    rate_per_second: 1
+    tier: 1
+  - name: c
+    rate_per_second: 1
+`)
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	must.Len(cfg.Providers, 3)
+	is.Equal(1, cfg.Providers[0].Tier)
+	is.Equal(1, cfg.Providers[1].Tier)
+	is.Equal(3, cfg.Providers[2].Tier, "the untiered provider keeps its own turn after the rotation")
 }
 
 func TestLoadRejectsDuplicateInstanceName(t *testing.T) {

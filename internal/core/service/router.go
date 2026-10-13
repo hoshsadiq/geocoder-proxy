@@ -136,8 +136,11 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 		r.providers = append(r.providers, runtimeProvider{
 			Provider: p,
 			instance: instance,
-			tier:     max(p.Tier, 1),
-			quota:    quota,
+			// The loader is what turns "no tier" into a tier of the entry's own;
+			// a caller that omits Tier lands in the first tier here instead, so
+			// it must set Tier itself to keep its providers apart.
+			tier:  max(p.Tier, 1),
+			quota: quota,
 		})
 	}
 	for _, opt := range opts {

@@ -92,12 +92,14 @@ providers:
     user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
 ```
 
-A tier is a set of providers you are happy to have answer the same lookups.
-Rotation goes by turn, not by speed, so a tier carries its number of providers
-times its slowest member's rate. Four instances paced at one call a second
-carry four lookups a second between them. Add a fifth that is faster, say 5/s,
-and it only adds one: five members means each gets one turn in five, so the
-group moves at five a second. Put providers in a tier only when they are
+A tier's number decides the order, not the position in the file: a provider in
+tier 2 is tried before one in tier 10 even when the tier 10 provider is written
+first. A tier is a set of providers you are happy to have answer the same
+lookups. Rotation goes by turn, not by speed, so a tier carries its number of
+providers times its slowest member's rate. Four instances paced at one call a
+second carry four lookups a second between them. Add a fifth that is faster,
+say 5/s, and it only adds one: five members means each gets one turn in five,
+so the group moves at five a second. Put providers in a tier only when they are
 comparable, and keep a provider with thinner coverage out of a better
 provider's tier.
 
@@ -112,8 +114,9 @@ tier is not tried. A sparse provider can settle a cell that a more thorough
 one would have filled, which is the other reason to keep a tier to providers
 of similar coverage.
 
-The `provider` label on the metrics and in the logs is the instance `name`, so
-two instances of one type show up separately.
+The `provider` label on the metrics is the instance `name`, so two instances of
+one type show up separately. Startup logs the instance names too; per-request
+log lines carry no provider.
 
 ## Getting started
 

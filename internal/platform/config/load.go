@@ -248,6 +248,7 @@ func providerEntry(name string, settings map[string]any, ownTier int) ProviderEn
 	if raw, ok := settings["tier"]; ok {
 		delete(settings, "tier")
 		entry.Tier = parseTier(raw)
+		entry.tierSet = true
 	}
 	return entry
 }
@@ -257,37 +258,53 @@ func providerEntry(name string, settings map[string]any, ownTier int) ProviderEn
 // would otherwise saturate to the integer limits.
 const maxTier = 1_000_000
 
+// tierOutOfRange is what parseTier returns for a positive number above maxTier.
+// It stays distinct from the zero that an unparseable tier returns, so Validate
+// can name the bound instead of calling a positive number not positive.
+const tierOutOfRange = maxTier + 1
+
 // parseTier accepts a whole number between 1 and maxTier, from the file or the
-// environment. Anything else returns zero, which Validate rejects, so a
-// malformed tier is a startup error rather than a silently misordered pool.
+// environment. Anything else returns zero, or tierOutOfRange above the bound,
+// both of which Validate rejects, so a malformed tier is a startup error rather
+// than a silently misordered pool.
 func parseTier(raw any) int {
-	var value int
 	switch v := raw.(type) {
 	case int:
-		value = v
+		return boundedTier(v)
 	case int64:
-		value = int(v)
+		return boundedTier(int(v))
 	case float64:
-		// Compare before converting: int() saturates a non-finite or
-		// out-of-range float to the integer limits, which the range check
-		// below would then accept.
-		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v > maxTier {
+		// The range is checked before converting: int() saturates a
+		// non-finite or out-of-range float to the integer limits, and +Inf and
+		// 1e300 are above the bound rather than unparseable.
+		if math.IsInf(v, 1) || v > maxTier {
+			return tierOutOfRange
+		}
+		if math.IsNaN(v) || math.IsInf(v, -1) || v != math.Trunc(v) {
 			return 0
 		}
-		value = int(v)
+		return boundedTier(int(v))
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
 			return 0
 		}
-		value = n
+		return boundedTier(n)
 	default:
 		return 0
 	}
-	if value < 1 || value > maxTier {
+}
+
+// boundedTier maps an already-whole number onto the valid tier range.
+func boundedTier(n int) int {
+	switch {
+	case n < 1:
 		return 0
+	case n > maxTier:
+		return tierOutOfRange
+	default:
+		return n
 	}
-	return value
 }
 
 // applyProviderEnv overlays GEOCODER_PROVIDER_<NAME>_<FIELD> onto a

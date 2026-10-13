@@ -72,6 +72,9 @@ type ProviderEntry struct {
 	// a tier a tier of its own, in list order, so a config written before
 	// tiers existed keeps its strict order. 1 is the first tier.
 	Tier int
+	// tierSet records that the operator wrote a tier, so Validate can tell a
+	// written tier from the one the loader assigns by position.
+	tierSet bool
 	// Settings are the provider's own keys, as read from the file and
 	// overridden by GEOCODER_PROVIDER_<NAME>_<FIELD>.
 	Settings map[string]any
@@ -145,8 +148,29 @@ func (c Config) Validate() error {
 			problems = append(problems, fmt.Sprintf("provider %q is listed more than once", p.Name))
 		}
 		seen[p.Name] = true
-		if p.Tier < 1 {
+		switch {
+		case p.Tier >= tierOutOfRange:
+			problems = append(problems, fmt.Sprintf("provider %q: tier must be at most %d", p.Name, maxTier))
+		case p.Tier < 1:
 			problems = append(problems, fmt.Sprintf("provider %q: tier must be a positive integer", p.Name))
+		}
+	}
+
+	// A tier written by the operator and a tier the loader assigned by position
+	// can name the same group without meaning to, which would rotate providers
+	// the config kept separate. Name both providers rather than guess.
+	written := make(map[int]string, len(c.Providers))
+	for _, p := range c.Providers {
+		if p.tierSet {
+			written[p.Tier] = p.Name
+		}
+	}
+	for _, p := range c.Providers {
+		if p.tierSet {
+			continue
+		}
+		if owner, ok := written[p.Tier]; ok {
+			problems = append(problems, fmt.Sprintf("provider %q has no tier; the tier it takes (%d) is also set explicitly by provider %q; set it, or move it", p.Name, p.Tier, owner))
 		}
 	}
 
