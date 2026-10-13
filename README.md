@@ -4,10 +4,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/hoshsadiq/geocoder-proxy)](https://goreportcard.com/report/github.com/hoshsadiq/geocoder-proxy)
 [![License](https://img.shields.io/github/license/hoshsadiq/geocoder-proxy)](./LICENSE)
 
-A geocoding service that fronts multiple upstream providers behind one
-Photon-compatible API. Built for [Dawarich](https://github.com/Freika/dawarich):
-point `PHOTON_API_HOST` at it and imports stop paying one API call per
-location point.
+One geocoding service in front of several upstream geocoders, answering in the
+Photon API shape. Dawarich can point `PHOTON_API_HOST` here instead of at a
+provider, and its imports stop costing one billed lookup per location point.
 
 ## Running it
 
@@ -15,65 +14,48 @@ location point.
 geocoder-proxy serve --config config.yaml
 ```
 
-Configuration layers: environment (`GEOCODER_*`) over a YAML file
-(`--config` or `GEOCODER_CONFIG`) over defaults. Provider API keys come
-from the environment (`GEOCODER_PROVIDER_<NAME>_API_KEY`), never from a
-committed file. See [config.example.yaml](config.example.yaml) for every
-key.
+Configuration layers environment (`GEOCODER_*`) over a YAML file (`--config` or
+`GEOCODER_CONFIG`) over defaults. Provider API keys come from the environment
+(`GEOCODER_PROVIDER_<NAME>_API_KEY`), never from a committed file.
+[config.example.yaml](config.example.yaml) lists every key.
 
-The Photon API listens on `:8080` by default (`/reverse`, `/api`);
-health and Prometheus metrics live on `:9090` (`/healthz`, `/metrics`).
+The Photon API listens on `:8080` (`/reverse`, `/api`); health and Prometheus
+metrics listen on `:9090` (`/healthz`, `/metrics`).
 
-Two timeouts bound a lookup. `request_timeout` (default 4s) is the
-per-request budget: a lookup still unanswered when it runs out is answered
-503, below Dawarich's own 5s geocoder timeout. `upstream_timeout` (default
-2s) caps a single provider attempt and must be at most half the budget, so
-one pace wait plus one capped attempt leaves room to try the next provider
-inside the budget.
+## Timeouts and load
 
-That failover guarantee is per **uncontended** lookup. Each provider is
-paced (`rate_per_second`, 1/s in the homelab deployment) and holds its own
-bucket (`tokenbucket.New` per provider), so a lookup queues once per
-provider it tries: the fallback provider is a second queue to wait behind,
-not a free one. The Nth simultaneous lookup waits about N-1 seconds for
-its token before its attempt even starts, so under load the pace queue
-spends the budget before any attempt runs. Measured against the deployed
-shape — both providers at `rate_per_second` 1, provider 1 hanging, provider
-2 healthy, `request_timeout` 4s, `upstream_timeout` 2s, three runs per row:
+`request_timeout` (default 4s) is the budget for one lookup, set below
+Dawarich's own 5s geocoder timeout. A lookup still unanswered at the budget is
+answered 503, which Dawarich retries. `upstream_timeout` (default 2s) caps a
+single provider attempt and must be at most half the budget, so a lookup can
+wait for one provider's pace token, give up on it, and still try the next
+provider inside the budget.
 
-| concurrent lookups | answered | 503s |
-| ------------------ | -------- | ---- |
-| 1 | 1, at 2.0s | 0 |
-| 3 | 2-3, at 2.0-4.0s | 0-1 |
-| 6 | 4, at 2.0-4.0s | 2 |
-| 10 | 5, at 0.0-4.0s | 5 |
-
-The counts move by one between runs, because two different things end a
-lookup. Most 503s land on the 4s budget, but one can arrive much earlier:
-when a provider refuses to queue, `x/time/rate` returns "would exceed
-context deadline" as soon as the reservation falls past the deadline, so
-the router fails over at once, finds every provider refusing, and answers
-503 long before the budget (measured at 2.0s and 3.0s at 10 concurrent).
-Dawarich retries a 503, so a contended lookup degrades to a retry rather
-than to a wrong answer.
+That holds for an uncontended lookup. Each provider is paced separately
+(`rate_per_second`), so the Nth simultaneous lookup queues roughly N-1 seconds
+before its attempt starts and can spend the whole budget waiting. Under load a
+contended lookup therefore degrades to a 503 that the consumer retries, which
+is the intended trade. AGENTS.md records the measurements.
 
 ## What it does
 
-- **Speaks Photon.** `GET /reverse` and `GET /api`, GeoJSON in the shape
-  Dawarich already parses. No Dawarich change needed.
-- **Caches by location.** Points within ~25 m of a previously answered
-  address reuse it, so a night at home costs one lookup instead of hundreds.
-- **Respects each provider's limits.** Per-provider rate pacing and daily
-  quota counters, with failover to the next provider when one is throttled
-  or down.
-- **Never silently loses a point.** An upstream outage is answered with an
-  error, not an empty result, so Dawarich retries instead of marking the
-  point geocoded.
-- **Observable.** Prometheus metrics for cache hit rate, per-provider
-  latency, errors and remaining quota.
+- Answers `GET /reverse` and `GET /api` as GeoJSON in the shape Dawarich
+  already parses, so nothing on the Dawarich side changes.
+- Caches by location. Points within about 25 m of an already-answered address
+  reuse that answer, so sitting at home overnight costs one lookup rather than
+  hundreds.
+- Paces each provider per second and counts daily calls against its quota,
+  moving to the next provider when one is throttled, out of quota, or down.
+- Never returns an empty result to hide a failure. An empty answer means a
+  provider genuinely found nothing; an outage is an error, so Dawarich retries
+  the point instead of marking it geocoded.
+- Exposes Prometheus metrics for cache hits, per-provider latency, errors and
+  remaining quota.
 
-Providers planned for v1: ChibiGeo/Photon/Komoot, Geoapify, LocationIQ,
-Nominatim. Adding another will be one package that registers itself.
+Providers are registered by name: `chibigeo` (which is Photon-shaped, so it
+fronts any Photon-compatible upstream), `geoapify`, `locationiq` and
+`nominatim`. A new one is a package that registers itself, plus one blank
+import.
 
 ## Getting started
 
@@ -89,9 +71,9 @@ mise run ci-local      # the full local CI gate
 
 ## Contributing
 
-See [AGENTS.md](./AGENTS.md) for the architecture rules (hexagonal, imports
-point inward, enforced by depguard) and the commit gate. Every change lands
-via a pull request from a feature branch; `mise run check` must pass first.
+[AGENTS.md](./AGENTS.md) carries the architecture rules (hexagonal, imports
+point inward, enforced by depguard) and the commit gate. Every change lands via
+a pull request from a feature branch, with `mise run check` passing first.
 
 ## License
 

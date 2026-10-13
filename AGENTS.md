@@ -68,11 +68,26 @@ Then add one blank import to `internal/adapter/secondary/provider/all/` and one 
 
 - **Compile-time interface guards.** Every adapter carries `var _ port.Geocoder = (*Client)(nil)` next to the type. Silent interface drift must be a build failure.
 - **Never answer empty on failure.** An empty result is only correct when a provider genuinely answered "nothing here". Upstream failure propagates as an error. The Photon adapter maps it to **503, not 502**: the geocoder gem Dawarich uses raises only on 400/401/402/429/503, and a JSON-bodied 502 parses into the empty result that Dawarich then marks as final. Dawarich treats a blank answer as final and never retries the point.
-- **Every lookup has a budget.** `GEOCODER_REQUEST_TIMEOUT` (default 4s, below Dawarich's 5s) is enforced by the HTTP layer: an expired lookup is a 503, a departed caller gets nothing and is not logged as an error. `GEOCODER_UPSTREAM_TIMEOUT` (default 2s, at most half the budget so one pace wait plus a capped attempt leaves room to fail over) caps one provider attempt; a capped attempt, or one the budget or a pace wait cut, counts as a provider `error`. Deadline-vs-cancel lives in `internal/adapter/primary/photon/photon.go`; the per-attempt cap is `service.WithAttemptTimeout`. The failover guarantee is per uncontended lookup: each provider is paced and holds its own bucket, so the Nth simultaneous lookup waits about N-1s for its token before its attempt begins and a contended lookup degrades to a 503 the consumer retries (README.md carries the measurement). A 503 can also arrive early, when every provider refuses to queue (`x/time/rate` reports "would exceed context deadline"), not only at the budget.
+- **Every lookup has a budget.** `GEOCODER_REQUEST_TIMEOUT` (default 4s, below Dawarich's 5s) is enforced by the HTTP layer: an expired lookup is a 503, a departed caller gets nothing and is not logged as an error. `GEOCODER_UPSTREAM_TIMEOUT` (default 2s, at most half the budget so one pace wait plus a capped attempt leaves room to fail over) caps one provider attempt; a capped attempt, or one the budget or a pace wait cut, counts as a provider `error`. Deadline-vs-cancel lives in `internal/adapter/primary/photon/photon.go`; the per-attempt cap is `service.WithAttemptTimeout`. A 503 can arrive early, when every provider refuses to queue (`x/time/rate` reports "would exceed context deadline"), not only at the budget.
 - **Request-level result counter.** `geocoder_lookups_total{result="ok|empty|failed"}` (`service.Router.recordLookup`) says what the caller got regardless of why, so an outage that records no provider `error` (every provider pacing-limited) still alerts on `failed`. Keep the five provider outcome values and their labels as they are.
 - **No coordinates in logs or metric labels.** Location history is PII; cardinality rules aside, raw coordinates never appear in telemetry. Provider adapters must also return coordinate-free errors, because the router wraps provider errors verbatim.
 - **Provider adapter contract** (full text in `internal/core/port/geocoder.go`): an empty slice with a nil error is a genuine "nothing here"; any failure, including "operation unsupported", must be an error. Populate `Address.CountryCode` whenever the provider returns one: providers localise country names, and the Photon adapter canonicalises from the code so failover cannot fragment country attribution downstream.
 - **Config layering**: flag > env (`GEOCODER_*`) > optional YAML > defaults, via koanf (all config structs carry `koanf:` tags). CLI via zulu (`github.com/zulucmd/zulu/v2`, a cobra fork: only the error-returning `RunE` hooks exist). Each provider owns the user-facing validation of its own config; panics in adapter constructors (`tokenbucket.New`, `service.New`) are the last-line backstop for programming errors, not the validation surface.
+
+### The budget under load
+
+The failover above holds for an uncontended lookup, and stops holding once lookups queue. Each provider holds its own bucket at its own `rate_per_second` (1/s in the homelab deployment), so a lookup queues once per provider it tries and the Nth simultaneous lookup waits about N-1 seconds for a token before its attempt begins.
+
+Measured with both providers at `rate_per_second` 1, provider 1 hanging, provider 2 healthy, `request_timeout` 4s, `upstream_timeout` 2s, three runs per row:
+
+| concurrent lookups | answered | 503s |
+| ------------------ | -------- | ---- |
+| 1 | 1, at 2.0s | 0 |
+| 3 | 2-3, at 2.0-4.0s | 0-1 |
+| 6 | 4, at 2.0-4.0s | 2 |
+| 10 | 5, at 0.0-4.0s | 5 |
+
+The counts move by one between runs because two different things end a lookup: most 503s land on the budget, and some arrive earlier when a provider refuses to queue (measured at 2.0s and 3.0s at 10 concurrent). The `0.0s` answer is a cache hit, two coordinates in the same ~55m cell. A contended lookup degrades to a retry, never to a wrong answer.
 
 ## Commit gate: prek
 
