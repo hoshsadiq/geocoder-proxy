@@ -31,11 +31,27 @@ cache:
   # reuse it, in metres.
   max_reuse_distance: 25
 
-# Providers are tried in order. rate_per_second paces calls; daily_quota
-# caps them over a rolling 24-hour window (0 = unlimited).
+# Providers are grouped into tiers. Lookups rotate between the providers of
+# the earliest tier that still has someone available, so several instances of a
+# type share the load instead of one carrying it until its quota runs out. A
+# later tier is only reached once every provider before it has failed or run out
+# of quota, which is where a public rescue service belongs. Within a tier, order
+# is the order written here.
+#
+# Every entry needs a `name`, unique in this list. `type` names the provider to
+# use and defaults to `name`, so set it only when the same type appears more
+# than once. `tier` defaults to 1. rate_per_second paces calls and daily_quota
+# caps them over a rolling 24-hour window (0 = unlimited); both are per
+# instance.
 providers:
-  - name: chibigeo
-    # api_key: set GEOCODER_PROVIDER_CHIBIGEO_API_KEY, never in a committed file
+  - name: chibi-eu
+    type: chibigeo
+    # api_key: set GEOCODER_PROVIDER_CHIBI_EU_API_KEY, never in a committed file
+    rate_per_second: 1
+    daily_quota: 2500
+  - name: chibi-us
+    type: chibigeo
+    # api_key: set GEOCODER_PROVIDER_CHIBI_US_API_KEY
     rate_per_second: 1
     daily_quota: 2500
   - name: geoapify
@@ -47,6 +63,10 @@ providers:
     rate_per_second: 2
     daily_quota: 5000
   - name: nominatim
+    # A public rescue service: later tier and a small daily quota, so rotation
+    # never hands it a steady share of an import.
     # The public instance's usage policy requires an identifying User-Agent.
     user_agent: "geocoder-proxy/0.1 (https://github.com/hoshsadiq/geocoder-proxy)"
     rate_per_second: 1
+    daily_quota: 500
+    tier: 2

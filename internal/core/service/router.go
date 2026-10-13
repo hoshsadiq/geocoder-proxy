@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
@@ -21,6 +23,15 @@ const maxForwardTextBytes = 512
 
 // Provider bundles one upstream geocoder with its limits.
 type Provider struct {
+	// Name is the configured instance name. Metrics and logs use it, so two
+	// instances of one provider type stay distinguishable. Empty falls back to
+	// the geocoder's own name.
+	Name string
+	// Tier groups providers for rotation: a lookup rotates only among the
+	// providers of the earliest tier that has anyone available, and a later
+	// tier is reached only when every provider before it failed or is out of
+	// quota. Zero means the first tier.
+	Tier     int
 	Geocoder port.Geocoder
 	// Limiter paces calls; nil means unpaced.
 	Limiter port.Limiter
@@ -31,11 +42,16 @@ type Provider struct {
 
 type runtimeProvider struct {
 	Provider
+	// instance is the name that labels metrics and logs; it is Name when set,
+	// otherwise the geocoder's own name.
+	instance string
+	// tier is the grouping used for rotation; 1 or more, first tier first.
+	tier  int
 	quota *quotaCounter
 }
 
-// Router implements port.GeocodeService over a cache and an ordered list of
-// providers. The zero Router is not usable; build it with New.
+// Router implements port.GeocodeService over a cache and providers grouped into
+// tiers. The zero Router is not usable; build it with New.
 type Router struct {
 	cache          port.Cache
 	metrics        port.Metrics
@@ -44,6 +60,9 @@ type Router struct {
 	attemptTimeout time.Duration
 
 	providers []runtimeProvider
+	// cursor advances once per lookup that reaches the providers; it is the
+	// rotation offset within each tier.
+	cursor atomic.Uint64
 }
 
 // Option customises a Router.
@@ -77,9 +96,9 @@ func WithAttemptTimeout(d time.Duration) Option {
 // Compile-time guard: the router is the incoming port's implementation.
 var _ port.GeocodeService = (*Router)(nil)
 
-// New wires the router. Providers are tried in order. Misconfiguration is a
-// startup failure, so New panics on nil dependencies rather than letting the
-// first request crash.
+// New wires the router. Providers rotate within their tier, earliest tier
+// first. Misconfiguration is a startup failure, so New panics on nil
+// dependencies rather than letting the first request crash.
 func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...Option) *Router {
 	if cache == nil {
 		panic("service.New: nil cache")
@@ -97,16 +116,64 @@ func New(cache port.Cache, metrics port.Metrics, providers []Provider, opts ...O
 		if p.Geocoder == nil {
 			panic("service.New: provider with nil geocoder")
 		}
+		instance := p.Name
+		if instance == "" {
+			instance = p.Geocoder.Name()
+		}
 		var quota *quotaCounter
 		if p.DailyQuota > 0 {
 			quota = newQuotaCounter(p.DailyQuota)
 		}
-		r.providers = append(r.providers, runtimeProvider{Provider: p, quota: quota})
+		r.providers = append(r.providers, runtimeProvider{
+			Provider: p,
+			instance: instance,
+			tier:     max(p.Tier, 1),
+			quota:    quota,
+		})
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
 	return r
+}
+
+// orderedProviders returns the provider order for one lookup: grouped by tier,
+// earliest first, ring-rotated within each tier so successive lookups start at
+// a different provider. Rotation only shares a lookup across providers of the
+// same tier, and a later tier is reached only after every provider before it
+// failed or ran out of quota, so a rescue provider never takes a steady share
+// of the traffic.
+func (r *Router) orderedProviders() []runtimeProvider {
+	offset := int(r.cursor.Add(1) - 1)
+	if len(r.providers) < 2 {
+		return r.providers
+	}
+
+	tiers := make([]int, 0, len(r.providers))
+	seen := make(map[int]bool, len(r.providers))
+	for _, p := range r.providers {
+		if !seen[p.tier] {
+			seen[p.tier] = true
+			tiers = append(tiers, p.tier)
+		}
+	}
+	slices.Sort(tiers)
+
+	ordered := make([]runtimeProvider, 0, len(r.providers))
+	for _, tier := range tiers {
+		members := make([]int, 0, len(r.providers))
+		for i, p := range r.providers {
+			if p.tier == tier {
+				members = append(members, i)
+			}
+		}
+		start := offset % len(members)
+		for k := range members {
+			member := members[(start+k)%len(members)]
+			ordered = append(ordered, r.providers[member])
+		}
+	}
+	return ordered
 }
 
 // Reverse resolves the places nearest to the query point: cache first, then
@@ -238,19 +305,20 @@ func (r *Router) budgetCut(ctx context.Context, provider string, d time.Duration
 // generic.
 func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Context, port.Geocoder) (T, bool, error)) (T, error) {
 	var zero T
-	if len(r.providers) == 0 {
+	providers := r.orderedProviders()
+	if len(providers) == 0 {
 		return zero, domain.ErrNoProviders
 	}
 
 	var errs []error
-	for _, p := range r.providers {
+	for _, p := range providers {
 		// A caller whose own context has ended is never a provider failure,
 		// and must not spend quota on the remaining providers.
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
 
-		name := p.Geocoder.Name()
+		name := p.instance
 
 		if p.quota != nil && p.quota.remaining(r.now()) == 0 {
 			r.metrics.ProviderRequest(name, port.ProviderQuotaExhausted, 0)

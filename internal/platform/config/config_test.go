@@ -10,7 +10,7 @@ import (
 )
 
 func entry(name string) ProviderEntry {
-	return ProviderEntry{Name: name, Settings: map[string]any{"rate_per_second": 1}}
+	return ProviderEntry{Name: name, Tier: 1, Settings: map[string]any{"rate_per_second": 1}}
 }
 
 func TestValidate(t *testing.T) {
@@ -36,6 +36,8 @@ func TestValidate(t *testing.T) {
 		{name: "upstream timeout at exactly half the budget", mutate: func(c *Config) { c.UpstreamTimeout = c.RequestTimeout / 2 }},
 		{name: "duplicate providers", mutate: func(c *Config) { c.Providers = append(c.Providers, entry("chibigeo")) }, wantErr: "more than once"},
 		{name: "empty provider name", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: ""}} }, wantErr: "name is empty"},
+		{name: "zero tier", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: "chibigeo", Tier: 0}} }, wantErr: "tier must be a positive integer"},
+		{name: "negative tier", mutate: func(c *Config) { c.Providers = []ProviderEntry{{Name: "chibigeo", Tier: -2}} }, wantErr: "tier must be a positive integer"},
 		// Provider settings are deliberately not checked here: they belong
 		// to the provider that owns them (see all_test's conformance suite).
 		{name: "unknown provider name passes", mutate: func(c *Config) { c.Providers = []ProviderEntry{entry("future")} }},

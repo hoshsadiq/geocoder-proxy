@@ -40,6 +40,93 @@ providers:
 	is.Equal("from-file", cfg.Providers[0].Settings["api_key"])
 }
 
+// The same provider type can appear more than once, as separate instances with
+// their own name, tier and settings. The instance keys do not reach the
+// provider's own decode.
+func TestLoadMultipleInstancesOfOneType(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, `
+providers:
+  - name: chibi-eu
+    type: chibigeo
+    base_url: https://eu.example
+    rate_per_second: 1
+    daily_quota: 2500
+  - name: chibi-us
+    type: chibigeo
+    base_url: https://us.example
+    rate_per_second: 1
+    daily_quota: 2500
+    tier: 2
+`)
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	must.Len(cfg.Providers, 2)
+	is.Equal("chibi-eu", cfg.Providers[0].Name)
+	is.Equal("chibigeo", cfg.Providers[0].Type)
+	is.Equal(1, cfg.Providers[0].Tier)
+	is.Equal("https://eu.example", cfg.Providers[0].Settings["base_url"])
+	is.Equal("chibigeo", cfg.Providers[1].Type)
+	is.Equal(2, cfg.Providers[1].Tier)
+	is.Equal("https://us.example", cfg.Providers[1].Settings["base_url"])
+	is.NotContains(cfg.Providers[0].Settings, "type")
+	is.NotContains(cfg.Providers[0].Settings, "tier")
+}
+
+// A single entry with no type or tier keeps working: the type defaults to the
+// instance name and the tier to the first.
+func TestProviderTypeAndTierDefaultToSingleEntryShape(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n")
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	must.Len(cfg.Providers, 1)
+	is.Equal("chibigeo", cfg.Providers[0].Type)
+	is.Equal(1, cfg.Providers[0].Tier)
+}
+
+// The tier is settable from the environment too, like every other instance key.
+func TestTierFromEnv(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, "providers:\n  - name: rescue\n    type: chibigeo\n    rate_per_second: 1\n")
+	t.Setenv("GEOCODER_PROVIDER_RESCUE_TIER", "3")
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	is.Equal(3, cfg.Providers[0].Tier)
+}
+
+func TestLoadRejectsMalformedTier(t *testing.T) {
+	for _, tier := range []string{"0", "-1", "1.5", "banana"} {
+		t.Run(tier, func(t *testing.T) {
+			must := require.New(t)
+			path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n    tier: "+tier+"\n")
+			_, err := Load(path, nil)
+			must.Error(err)
+			must.ErrorContains(err, "tier must be a positive integer")
+		})
+	}
+}
+
+func TestLoadRejectsDuplicateInstanceName(t *testing.T) {
+	must := require.New(t)
+	path := writeYAML(t, `
+providers:
+  - name: chibi-eu
+    type: chibigeo
+    rate_per_second: 1
+  - name: chibi-eu
+    type: geoapify
+    api_key: x
+    rate_per_second: 1
+`)
+	_, err := Load(path, nil)
+	must.Error(err, "two instances must not share a name")
+	must.ErrorContains(err, "more than once")
+}
+
 func TestEnvOverridesFile(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	path := writeYAML(t, `

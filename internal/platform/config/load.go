@@ -3,8 +3,10 @@ package config
 import (
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -182,8 +184,10 @@ func unknownProviderEnv(entries []ProviderEntry) error {
 }
 
 // providerEntries turns the file's provider list into entries: it lifts the
-// name out, applies the per-provider environment overrides, and orders the
-// result the way GEOCODER_PROVIDERS names it when that variable is set.
+// instance keys out, applies the per-provider environment overrides, and orders
+// the result the way GEOCODER_PROVIDERS names it when that variable is set. Each
+// entry is keyed by its name, so several instances of one provider type stay
+// separate entries.
 func providerEntries(fromFile []map[string]any) []ProviderEntry {
 	type source struct {
 		settings map[string]any
@@ -216,9 +220,58 @@ func providerEntries(fromFile []map[string]any) []ProviderEntry {
 		settings := make(map[string]any, len(s.settings))
 		maps.Copy(settings, s.settings)
 		applyProviderEnv(settings, name)
-		entries = append(entries, ProviderEntry{Name: name, Settings: settings})
+		entries = append(entries, providerEntry(name, settings))
 	}
 	return entries
+}
+
+// providerEntry splits one instance's own keys out of its settings: type names
+// the registered provider (defaulting to the instance name) and tier selects
+// the rotation group (defaulting to the first). The rest is the provider's own
+// settings, decoded strictly by the provider itself.
+func providerEntry(name string, settings map[string]any) ProviderEntry {
+	entry := ProviderEntry{Name: name, Type: name, Tier: 1, Settings: settings}
+	if raw, ok := settings["type"]; ok {
+		delete(settings, "type")
+		if value, ok := raw.(string); ok && value != "" {
+			entry.Type = value
+		}
+	}
+	if raw, ok := settings["tier"]; ok {
+		delete(settings, "tier")
+		entry.Tier = parseTier(raw)
+	}
+	return entry
+}
+
+// parseTier accepts a whole number of one or more, from the file or the
+// environment. Anything else returns zero, which Validate rejects, so a
+// malformed tier is a startup error rather than a silently misordered pool.
+func parseTier(raw any) int {
+	value := 0
+	switch v := raw.(type) {
+	case int:
+		value = v
+	case int64:
+		value = int(v)
+	case float64:
+		if v != math.Trunc(v) {
+			return 0
+		}
+		value = int(v)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+		value = n
+	default:
+		return 0
+	}
+	if value < 1 {
+		return 0
+	}
+	return value
 }
 
 // applyProviderEnv overlays GEOCODER_PROVIDER_<NAME>_<FIELD> onto a
