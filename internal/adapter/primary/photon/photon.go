@@ -4,6 +4,7 @@
 package photon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -49,11 +50,12 @@ func New(svc port.GeocodeService, regionNames display.Namer, logger *slog.Logger
 // coordinates or search text into the log.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	rw := &statusRecorder{ResponseWriter: w}
 	h.mux.ServeHTTP(rw, r)
 	h.logger.InfoContext(r.Context(), "request",
 		"method", r.Method,
 		"path", r.URL.EscapedPath(),
+		// 0 means the handler wrote nothing (the caller was gone).
 		"status", rw.status,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
@@ -61,12 +63,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type statusRecorder struct {
 	http.ResponseWriter
+	// status is 0 until the handler writes a status or a body.
 	status int
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
+	if r.status == 0 {
+		r.status = code
+	}
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 // maxResultLimit caps the limit parameter. Photon's own servers cap
@@ -133,6 +145,12 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, results []doma
 			// Provider error text is coordinate-free by contract, so it is
 			// safe to log.
 			h.logger.WarnContext(r.Context(), "all providers failed", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
+		case errors.Is(r.Context().Err(), context.DeadlineExceeded):
+			// The request budget ran out with no answer. A server-imposed
+			// deadline is not a departed caller: answer 503, the one failure
+			// the geocoder gem retries. No payload in the log (PII rule).
+			h.logger.WarnContext(r.Context(), "request budget exceeded")
 			writeError(w, http.StatusServiceUnavailable, "geocoding temporarily unavailable")
 		case r.Context().Err() != nil:
 			// The caller is gone; writing a status nobody reads only adds a

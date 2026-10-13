@@ -3,6 +3,7 @@
 # Precedence: environment (GEOCODER_*) > this file > defaults.
 # --config or GEOCODER_CONFIG selects the file.
 # Flat settings have env equivalents: GEOCODER_LISTEN_ADDR, GEOCODER_OPS_ADDR,
+# GEOCODER_REQUEST_TIMEOUT, GEOCODER_UPSTREAM_TIMEOUT,
 # GEOCODER_CACHE_TTL, GEOCODER_CACHE_MAX_ENTRIES,
 # GEOCODER_CACHE_MAX_REUSE_DISTANCE.
 # GEOCODER_PROVIDERS selects and orders providers by name;
@@ -12,6 +13,16 @@
 
 listen_addr: ":8080"
 ops_addr: ":9090"
+
+# Per-request budget. A lookup still unanswered when it runs out is answered
+# 503, so Dawarich sees a transient error and retries, rather than a client-side
+# timeout at its own 5s limit.
+request_timeout: 4s
+# Cap on one provider attempt. At most half the budget, so there is time to try
+# the next provider when one is slow. Lookups arriving together queue on each
+# provider's rate limit, so the budget can also go on waiting rather than on a
+# provider.
+upstream_timeout: 2s
 
 cache:
   ttl: 720h

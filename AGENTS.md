@@ -68,9 +68,17 @@ Then add one blank import to `internal/adapter/secondary/provider/all/` and one 
 
 - **Compile-time interface guards.** Every adapter carries `var _ port.Geocoder = (*Client)(nil)` next to the type. Silent interface drift must be a build failure.
 - **Never answer empty on failure.** An empty result is only correct when a provider genuinely answered "nothing here". Upstream failure propagates as an error. The Photon adapter maps it to **503, not 502**: the geocoder gem Dawarich uses raises only on 400/401/402/429/503, and a JSON-bodied 502 parses into the empty result that Dawarich then marks as final. Dawarich treats a blank answer as final and never retries the point.
+- **Every lookup has a budget.** `GEOCODER_REQUEST_TIMEOUT` (default 4s, below Dawarich's 5s) is enforced by the HTTP layer: a lookup that runs out of time is answered 503, and a caller who hung up gets nothing and is not logged as an error. `GEOCODER_UPSTREAM_TIMEOUT` (default 2s) caps one provider attempt and may not exceed half the budget, so there is time left to try the next provider. An attempt the cap or the budget cut counts as a provider `error`. Deadline versus cancellation lives in `internal/adapter/primary/photon/photon.go`; the per-attempt cap is `service.WithAttemptTimeout`.
+- **Request-level result counter.** `geocoder_lookups_total{result="ok|empty|failed"}` (`service.Router.recordLookup`) says what the caller got regardless of why, so an outage that records no provider `error` (every provider pacing-limited) still alerts on `failed`. Keep the five provider outcome values and their labels as they are.
 - **No coordinates in logs or metric labels.** Location history is PII; cardinality rules aside, raw coordinates never appear in telemetry. Provider adapters must also return coordinate-free errors, because the router wraps provider errors verbatim.
 - **Provider adapter contract** (full text in `internal/core/port/geocoder.go`): an empty slice with a nil error is a genuine "nothing here"; any failure, including "operation unsupported", must be an error. Populate `Address.CountryCode` whenever the provider returns one: providers localise country names, and the Photon adapter canonicalises from the code so failover cannot fragment country attribution downstream.
 - **Config layering**: flag > env (`GEOCODER_*`) > optional YAML > defaults, via koanf (all config structs carry `koanf:` tags). CLI via zulu (`github.com/zulucmd/zulu/v2`, a cobra fork: only the error-returning `RunE` hooks exist). Each provider owns the user-facing validation of its own config; panics in adapter constructors (`tokenbucket.New`, `service.New`) are the last-line backstop for programming errors, not the validation surface.
+
+### The budget under load
+
+The failover above assumes lookups arrive one at a time. Each provider has its own pace limit (`rate_per_second`, 1/s in the homelab deployment), so lookups arriving together queue for a token: with ten in flight the last one waits around nine seconds, spends the whole budget before its attempt starts, and the caller gets a 503. Dawarich retries those, which beats both waiting past its own timeout and asking a provider for more than it allows.
+
+A 503 can also come back early, well inside the budget. When a provider would have to wait past the deadline for its token it declines at once, and if every provider does that the lookup fails without any attempt being made.
 
 ## Commit gate: prek
 

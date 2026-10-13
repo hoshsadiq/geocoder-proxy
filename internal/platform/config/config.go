@@ -14,13 +14,32 @@ import (
 	"time"
 )
 
+// Shipped defaults for the two lookup timeouts. Exported so the docs, the
+// tests and the composition root all pin the same numbers.
+const (
+	// DefaultRequestTimeout is the per-request budget: below Dawarich's own
+	// 5s geocoder timeout, so an expired lookup reaches the consumer as a 503
+	// rather than as a client-side timeout.
+	DefaultRequestTimeout = 4 * time.Second
+	// DefaultUpstreamTimeout caps one provider attempt. Half the budget, so
+	// one pace wait plus a capped attempt still leaves room for one failover on
+	// an uncontended lookup.
+	DefaultUpstreamTimeout = 2 * time.Second
+)
+
 // Config is the validated runtime configuration.
 type Config struct {
 	// ListenAddr is the Photon API listener address.
 	ListenAddr string
 	// OpsAddr is the health/metrics listener address.
 	OpsAddr string
-	Cache   Cache
+	// RequestTimeout is the per-request budget. A lookup still unanswered when
+	// it runs out is answered 503, not left to the caller's own timeout.
+	RequestTimeout time.Duration
+	// UpstreamTimeout caps one provider attempt, so a single slow provider
+	// cannot consume the whole request budget before failover.
+	UpstreamTimeout time.Duration
+	Cache           Cache
 	// Providers are tried in order.
 	Providers []ProviderEntry
 }
@@ -52,6 +71,10 @@ func defaults() Config {
 	return Config{
 		ListenAddr: ":8080",
 		OpsAddr:    ":9090",
+		// The default upstream cap is half the budget, so a pace wait plus a
+		// capped attempt still leaves room for one failover.
+		RequestTimeout:  DefaultRequestTimeout,
+		UpstreamTimeout: DefaultUpstreamTimeout,
 		Cache: Cache{
 			TTL:              30 * 24 * time.Hour,
 			MaxEntries:       100_000,
@@ -74,6 +97,17 @@ func (c Config) Validate() error {
 	}
 	if c.ListenAddr != "" && c.ListenAddr == c.OpsAddr {
 		problems = append(problems, "listen and ops addresses must differ")
+	}
+	if c.RequestTimeout <= 0 {
+		problems = append(problems, "request_timeout must be a positive duration")
+	}
+	if c.UpstreamTimeout <= 0 {
+		problems = append(problems, "upstream_timeout must be a positive duration")
+	} else if c.UpstreamTimeout > c.RequestTimeout/2 {
+		// A single attempt cap above half the budget leaves no room to try
+		// the next provider (the pace wait comes out of the same budget), so
+		// failover cannot happen inside it.
+		problems = append(problems, "upstream_timeout must be at most half of request_timeout")
 	}
 	if c.Cache.MaxReuseDistance <= 0 || math.IsNaN(c.Cache.MaxReuseDistance) || math.IsInf(c.Cache.MaxReuseDistance, 0) {
 		problems = append(problems, "cache.max_reuse_distance must be a finite positive number")

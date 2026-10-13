@@ -99,6 +99,72 @@ func TestInvalidTTLError(t *testing.T) {
 	must.ErrorContains(err, "cache.ttl")
 }
 
+func TestLoadTimeouts(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, `
+request_timeout: 6s
+upstream_timeout: 2500ms
+providers:
+  - name: chibigeo
+    rate_per_second: 1
+`)
+
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	is.Equal(6*time.Second, cfg.RequestTimeout)
+	is.Equal(2500*time.Millisecond, cfg.UpstreamTimeout)
+
+	t.Setenv("GEOCODER_REQUEST_TIMEOUT", "9s")
+	cfg, err = Load(path, nil)
+	must.NoError(err)
+	is.Equal(9*time.Second, cfg.RequestTimeout, "env beats the file")
+}
+
+// The example file is the shape an operator copies; its timeout values must
+// match the exported defaults the code ships, or the docs drift silently.
+func TestExampleConfigMatchesDefaults(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	cfg, err := Load(filepath.Join("..", "..", "..", "config.example.yaml"), nil)
+	must.NoError(err, "the shipped example must load and validate")
+	is.Equal(DefaultRequestTimeout, cfg.RequestTimeout)
+	is.Equal(DefaultUpstreamTimeout, cfg.UpstreamTimeout)
+}
+
+func TestDefaultTimeouts(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	path := writeYAML(t, "providers:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	cfg, err := Load(path, nil)
+	must.NoError(err)
+	is.Equal(DefaultRequestTimeout, cfg.RequestTimeout)
+	is.Equal(DefaultUpstreamTimeout, cfg.UpstreamTimeout)
+}
+
+func TestInvalidRequestTimeoutError(t *testing.T) {
+	must := require.New(t)
+	path := writeYAML(t, "request_timeout: banana\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	_, err := Load(path, nil)
+	must.Error(err)
+	must.ErrorContains(err, "request_timeout")
+}
+
+func TestUpstreamTimeoutAboveHalfBudgetError(t *testing.T) {
+	must := require.New(t)
+	// Positive and below the budget, but leaving no room for a pace wait plus a
+	// failover: rejected.
+	path := writeYAML(t, "request_timeout: 4s\nupstream_timeout: 3s\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	_, err := Load(path, nil)
+	must.Error(err)
+	must.ErrorContains(err, "at most half")
+}
+
+func TestUpstreamTimeoutAboveBudgetError(t *testing.T) {
+	must := require.New(t)
+	path := writeYAML(t, "request_timeout: 2s\nupstream_timeout: 5s\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
+	_, err := Load(path, nil)
+	must.Error(err)
+	must.ErrorContains(err, "at most half")
+}
+
 func TestUnknownKeyIsAnError(t *testing.T) {
 	must := require.New(t)
 	path := writeYAML(t, "cache:\n  max_entires: 500\nproviders:\n  - name: chibigeo\n    rate_per_second: 1\n")
