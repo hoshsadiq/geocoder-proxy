@@ -120,12 +120,15 @@ func TestServeRotatesAcrossInstances(t *testing.T) {
 	t.Setenv("GEOCODER_OPS_ADDR", opsAddr)
 	t.Setenv("GEOCODER_PROVIDERS", "chibi-eu,chibi-us")
 	// Both instances share the type; only the instance name tells them apart.
+	// The shared tier is what puts them in one rotation.
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_EU_TYPE", "chibigeo")
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_EU_BASE_URL", eu.URL)
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_EU_RATE_PER_SECOND", "10")
+	t.Setenv("GEOCODER_PROVIDER_CHIBI_EU_TIER", "1")
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_US_TYPE", "chibigeo")
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_US_BASE_URL", us.URL)
 	t.Setenv("GEOCODER_PROVIDER_CHIBI_US_RATE_PER_SECOND", "10")
+	t.Setenv("GEOCODER_PROVIDER_CHIBI_US_TIER", "1")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -171,6 +174,76 @@ func TestServeRotatesAcrossInstances(t *testing.T) {
 	is.Contains(text, `provider="chibi-eu"`, "the instance name is the provider label")
 	is.Contains(text, `provider="chibi-us"`)
 	is.NotContains(text, `provider="chibigeo"`, "the type is not the label when an instance name is set")
+}
+
+// TestServeKeepsProviderOrderWithoutTiers boots the real composition root with
+// two providers that share no tier, and checks that the first one answers every
+// lookup while it can and the second is never called. This is the behaviour a
+// config had before tiers existed, and leaving `tier` out must keep it.
+func TestServeKeepsProviderOrderWithoutTiers(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+
+	newUpstream := func(hits *atomic.Int64) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"type":"FeatureCollection","features":[{"type":"Feature",
+				"properties":{"osm_id":1,"osm_type":"W","name":"Test Street","street":"Test Street","city":"Testville","country":"Testland","countrycode":"GB"},
+				"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}]}`)
+		}))
+	}
+	var firstHits, secondHits atomic.Int64
+	first, second := newUpstream(&firstHits), newUpstream(&secondHits)
+	defer first.Close()
+	defer second.Close()
+
+	appAddr := freeAddr(t)
+	opsAddr := freeAddr(t)
+	t.Setenv("GEOCODER_LISTEN_ADDR", appAddr)
+	t.Setenv("GEOCODER_OPS_ADDR", opsAddr)
+	t.Setenv("GEOCODER_PROVIDERS", "primary,secondary")
+	// No tier on either: each is its own tier, in the order written.
+	t.Setenv("GEOCODER_PROVIDER_PRIMARY_TYPE", "chibigeo")
+	t.Setenv("GEOCODER_PROVIDER_PRIMARY_BASE_URL", first.URL)
+	t.Setenv("GEOCODER_PROVIDER_PRIMARY_RATE_PER_SECOND", "10")
+	t.Setenv("GEOCODER_PROVIDER_SECONDARY_TYPE", "chibigeo")
+	t.Setenv("GEOCODER_PROVIDER_SECONDARY_BASE_URL", second.URL)
+	t.Setenv("GEOCODER_PROVIDER_SECONDARY_RATE_PER_SECOND", "10")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, "") }()
+	defer func() {
+		cancel()
+		must.NoError(<-done, "graceful shutdown")
+	}()
+
+	get := func(url string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		return http.DefaultClient.Do(req)
+	}
+	must.Eventually(func() bool {
+		resp, err := get("http://" + opsAddr + "/healthz")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 5*time.Second, 50*time.Millisecond, "ops listener never came up")
+
+	// Three distinct cells, so the cache never serves one: the first provider
+	// must take them all and the second must stay untouched.
+	for _, q := range []string{"lat=51.4774&lon=-0.061", "lat=51.5000&lon=-0.1000", "lat=51.5100&lon=-0.1100"} {
+		resp, err := get("http://" + appAddr + "/reverse?" + q)
+		must.NoError(err)
+		_ = resp.Body.Close()
+		must.Equal(http.StatusOK, resp.StatusCode)
+	}
+	is.Equal(int64(3), firstHits.Load(), "the first provider answers every lookup while it can")
+	is.Equal(int64(0), secondHits.Load(), "the second provider is not called while the first succeeds")
 }
 
 func freeAddr(t *testing.T) string {

@@ -68,7 +68,9 @@ Then add one blank import to `internal/adapter/secondary/provider/all/` and one 
 
 A provider type can appear more than once in `providers`. Each entry carries a unique `name`; `type` names the registered provider and defaults to `name`, so the registry stays keyed by type and the composition root resolves a (name, type) pair into `service.Provider{Name, Tier, ...}`. The router labels metrics and logs with the instance name, so two instances of one type stay apart.
 
-Lookups rotate: `Router.orderedProviders` ring-rotates the providers within each tier, tiers in order, so successive lookups start at a different provider instead of queueing behind the first. `Provider.Tier` groups them (1-based; 0 is treated as 1), and a later tier is reached only after every provider before it failed or ran out of quota, which keeps a small-quota public rescue service from taking a steady share of a bulk import. Quota and pacing stay per instance.
+Lookups rotate only within a tier: `Router.orderedProviders` ring-rotates the providers of each tier, tiers in order, so successive lookups start at a different provider instead of queueing behind the first. A later tier is reached only after every provider before it failed or ran out of quota, which keeps a small-quota public rescue service from taking a steady share of a bulk import. Rotation is opt-in: the config loader gives an entry with no `tier` a tier of its own, in list order, so a config that names several providers without tiers is tried strictly in order exactly as before, and only providers that share an explicit `tier` rotate. `Provider.Tier` is 1-based; the router treats 0 as 1. Quota and pacing stay per instance.
+
+An empty answer ends the walk, within a tier as across tiers: the first provider to answer "nothing here" settles the lookup and its answer is cached for the cell. A tier is therefore a set of providers of comparable coverage, since any member may decide a cell.
 
 ### Conventions
 
@@ -82,7 +84,7 @@ Lookups rotate: `Router.orderedProviders` ring-rotates the providers within each
 
 ### The budget under load
 
-The failover above assumes lookups arrive one at a time. Each provider has its own pace limit (`rate_per_second`, 1/s in the homelab deployment), so lookups arriving together queue for a token: with ten in flight the last one waits around nine seconds, spends the whole budget before its attempt starts, and the caller gets a 503. Dawarich retries those, which beats both waiting past its own timeout and asking a provider for more than it allows.
+The failover above assumes lookups arrive one at a time. Each provider has its own pace limit (`rate_per_second`, 1/s in the homelab deployment), so lookups arriving together queue for a token: within a single-provider tier, with ten in flight the last one waits around nine seconds, spends the whole budget before its attempt starts, and the caller gets a 503. Rotation spreads that queue across a tier's members instead, so the wait shrinks as the tier grows. Dawarich retries those, which beats both waiting past its own timeout and asking a provider for more than it allows.
 
 A 503 can also come back early, well inside the budget. When a provider would have to wait past the deadline for its token it declines at once, and if every provider does that the lookup fails without any attempt being made.
 

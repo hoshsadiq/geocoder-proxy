@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -874,6 +875,34 @@ func TestTierLaterTierSkippedOnEmptyAnswer(t *testing.T) {
 	is.Equal(0, rescue.reverseCalls)
 }
 
+// An empty answer is final: within a shared tier it ends the walk just as it
+// does across tiers, and the empty result is cached for the whole cell. This is
+// the contract that makes an ocean point cheap, so the next instance in the
+// tier is never tried.
+func TestEmptyAnswerEndsTheWalkWithinATier(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	empty := reverseGeocoder("empty", nil, nil)
+	next := healthy("next")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 1, Geocoder: empty},
+		Provider{Tier: 1, Geocoder: next},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Empty(got, "the caller gets the genuine empty answer")
+	is.Equal(0, next.reverseCalls, "an empty answer from the first instance ends the walk")
+
+	// The empty answer is cached, so even a fresh lookup does not reach the
+	// next instance.
+	got, err = r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.Empty(got)
+	is.Equal(0, next.reverseCalls)
+	is.Equal([]port.CacheOutcome{port.CacheMiss, port.CacheHit}, metrics.cacheOutcomes)
+}
+
 // When every provider in the first tier fails, the lookup falls over to the
 // rescue tier.
 func TestTierLaterTierUsedWhenFirstTierFails(t *testing.T) {
@@ -915,6 +944,45 @@ func TestTierLaterTierUsedWhenFirstTierOutOfQuota(t *testing.T) {
 	is.Contains(outcomesOf(metrics), port.ProviderQuotaExhausted)
 	is.Equal(1, t1a.reverseCalls)
 	is.Equal(1, t1b.reverseCalls)
+}
+
+// Tiers are ordered by number, not by where they are written: a provider in a
+// higher-numbered tier waits even when it is listed first.
+func TestTierOrderIsNumericNotConfigOrder(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	later, earlier := reverseGeocoder("later", nil, errBoom), healthy("earlier")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 10, Geocoder: later},
+		Provider{Tier: 2, Geocoder: earlier},
+	)
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal(1, earlier.reverseCalls)
+	is.Equal(0, later.reverseCalls, "tier 2 is tried before tier 10 even though tier 10 is listed first")
+}
+
+// The rotation offset is reduced modulo each tier's size, and the cursor is a
+// uint64 that wraps. Seeding it near the top makes the second lookup land on the
+// wrap, which used to convert to a negative index and panic.
+func TestRotationSurvivesCursorWrap(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	metrics := &fakeMetrics{}
+	a, b := healthy("a"), healthy("b")
+	r := newRouter(newFakeCache(), metrics,
+		Provider{Tier: 1, Geocoder: a},
+		Provider{Tier: 1, Geocoder: b},
+	)
+	r.cursor.Store(math.MaxUint64 - 1)
+
+	for _, cell := range []domain.Coordinates{cellNear, otherCell, cellThird} {
+		got, err := r.Reverse(t.Context(), query(cell))
+		must.NoError(err)
+		must.Len(got, 1)
+	}
+	is.Equal(3, a.reverseCalls+b.reverseCalls, "every lookup across the wrap is answered")
 }
 
 // Failover stays inside a tier before the next tier is reached.

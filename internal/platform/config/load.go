@@ -187,7 +187,8 @@ func unknownProviderEnv(entries []ProviderEntry) error {
 // instance keys out, applies the per-provider environment overrides, and orders
 // the result the way GEOCODER_PROVIDERS names it when that variable is set. Each
 // entry is keyed by its name, so several instances of one provider type stay
-// separate entries.
+// separate entries, and each entry without a tier is given a tier of its own so
+// the strict order survives.
 func providerEntries(fromFile []map[string]any) []ProviderEntry {
 	type source struct {
 		settings map[string]any
@@ -215,63 +216,95 @@ func providerEntries(fromFile []map[string]any) []ProviderEntry {
 	}
 
 	entries := make([]ProviderEntry, 0, len(order))
-	for _, name := range order {
+	for i, name := range order {
 		s := byName[name]
 		settings := make(map[string]any, len(s.settings))
 		maps.Copy(settings, s.settings)
 		applyProviderEnv(settings, name)
-		entries = append(entries, providerEntry(name, settings))
+		entries = append(entries, providerEntry(name, settings, i+1))
 	}
 	return entries
 }
 
-// providerEntry splits one instance's own keys out of its settings: type names
-// the registered provider (defaulting to the instance name) and tier selects
-// the rotation group (defaulting to the first). The rest is the provider's own
-// settings, decoded strictly by the provider itself.
-func providerEntry(name string, settings map[string]any) ProviderEntry {
-	entry := ProviderEntry{Name: name, Type: name, Tier: 1, Settings: settings}
+// providerEntry splits one instance's own keys out of its settings. `type` and
+// `tier` are reserved keys, lifted out here, so a provider must not use either
+// as a setting name; the rest is the provider's own, decoded strictly by the
+// provider itself. type names the registered provider and defaults to the
+// instance name. tier selects the rotation group: an entry without one gets its
+// ownTier, which is its place in the list, so leaving tier out keeps the strict
+// order a config had before tiers existed.
+func providerEntry(name string, settings map[string]any, ownTier int) ProviderEntry {
+	entry := ProviderEntry{Name: name, Type: name, Tier: ownTier, Settings: settings}
 	if raw, ok := settings["type"]; ok {
 		delete(settings, "type")
-		if value, ok := raw.(string); ok && value != "" {
-			entry.Type = value
+		// A type that is present but is not a non-empty string leaves Type
+		// empty, which Validate rejects; it must not fall back to the name.
+		value, isString := raw.(string)
+		if !isString {
+			value = ""
 		}
+		entry.Type = value
 	}
 	if raw, ok := settings["tier"]; ok {
 		delete(settings, "tier")
 		entry.Tier = parseTier(raw)
+		entry.tierSet = true
 	}
 	return entry
 }
 
-// parseTier accepts a whole number of one or more, from the file or the
-// environment. Anything else returns zero, which Validate rejects, so a
-// malformed tier is a startup error rather than a silently misordered pool.
+// maxTier bounds a tier number. Tiers order a handful of groups, so a value
+// this large is a mistake; the bound also stops an out-of-range float, which Go
+// would otherwise saturate to the integer limits.
+const maxTier = 1_000_000
+
+// tierOutOfRange is what parseTier returns for a positive number above maxTier.
+// It stays distinct from the zero that an unparseable tier returns, so Validate
+// can name the bound instead of calling a positive number not positive.
+const tierOutOfRange = maxTier + 1
+
+// parseTier accepts a whole number between 1 and maxTier, from the file or the
+// environment. Anything else returns zero, or tierOutOfRange above the bound,
+// both of which Validate rejects, so a malformed tier is a startup error rather
+// than a silently misordered pool.
 func parseTier(raw any) int {
-	value := 0
 	switch v := raw.(type) {
 	case int:
-		value = v
+		return boundedTier(v)
 	case int64:
-		value = int(v)
+		return boundedTier(int(v))
 	case float64:
-		if v != math.Trunc(v) {
+		// The range is checked before converting: int() saturates a
+		// non-finite or out-of-range float to the integer limits, and +Inf and
+		// 1e300 are above the bound rather than unparseable.
+		if math.IsInf(v, 1) || v > maxTier {
+			return tierOutOfRange
+		}
+		if math.IsNaN(v) || math.IsInf(v, -1) || v != math.Trunc(v) {
 			return 0
 		}
-		value = int(v)
+		return boundedTier(int(v))
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
 			return 0
 		}
-		value = n
+		return boundedTier(n)
 	default:
 		return 0
 	}
-	if value < 1 {
+}
+
+// boundedTier maps an already-whole number onto the valid tier range.
+func boundedTier(n int) int {
+	switch {
+	case n < 1:
 		return 0
+	case n > maxTier:
+		return tierOutOfRange
+	default:
+		return n
 	}
-	return value
 }
 
 // applyProviderEnv overlays GEOCODER_PROVIDER_<NAME>_<FIELD> onto a
