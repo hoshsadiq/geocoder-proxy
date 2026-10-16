@@ -82,10 +82,6 @@ func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	is.Equal(2, terminalCount(t, c.reg), "each capped provider is one terminal cap")
 }
 
-// TestErrorBodyOn200Is503AndNotCached pins the no-features case end to end: a
-// 200 carrying an error and no features is a 503, and the error is not cached,
-// so the next request to the same cell asks upstream again rather than serving
-// a cached empty answer.
 func TestErrorBodyOn200Is503AndNotCached(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	calls := &atomic.Int32{}
@@ -106,9 +102,6 @@ func TestErrorBodyOn200Is503AndNotCached(t *testing.T) {
 	is.Equal(0, terminalCount(t, c.reg), "a 200 error is an ordinary error, not a 429 terminal cap")
 }
 
-// TestUnusableFeatureBodyIs503AndNotCached pins the unusable-features case end
-// to end: a 200 carrying an error whose only feature the mapping drops is a 503
-// that is not cached, so the next request asks upstream again.
 func TestUnusableFeatureBodyIs503AndNotCached(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	calls := &atomic.Int32{}

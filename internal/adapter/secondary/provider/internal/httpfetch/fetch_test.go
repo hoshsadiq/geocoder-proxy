@@ -138,7 +138,7 @@ func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
 // boundary test elsewhere cannot silently stop testing it.
 func TestTerminalCheckBodyIsCapped(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
-	must.GreaterOrEqual(MaxErrorBodyBytes, 1024, "the prefix must fit a normal error body")
+	is.Equal(4096, MaxErrorBodyBytes, "the docs name 4KiB; changing the cap is a deliberate act")
 	var gotLen atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)

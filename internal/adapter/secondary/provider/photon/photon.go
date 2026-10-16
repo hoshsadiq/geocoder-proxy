@@ -193,10 +193,9 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 			results = append(results, r)
 		}
 	}
-	// A 200 whose error is set and yields no usable result is a failure, not a
-	// cached empty. The length check comes first: parsing the error value can
-	// allocate on a large unusable error field, and a response that yields a
-	// result never needs to.
+	// A 200 whose error is set and yields no usable result is a failure. The
+	// length check comes first: parsing the error value can allocate on a large
+	// unusable error field, and a response that yields a result never needs to.
 	if len(results) == 0 {
 		if msg, set := errorValue(fc.Error); set {
 			if msg != "" && httpfetch.SafeCode(msg) {
@@ -222,29 +221,29 @@ type featureCollection struct {
 // unrecognised error shape fails loudly instead of reading as a genuine
 // no-match and being cached.
 func errorValue(raw json.RawMessage) (msg string, set bool) {
-	trimmed := bytes.TrimSpace(raw)
-	switch string(trimmed) {
-	case "", "null", "false":
+	if len(raw) == 0 {
 		return "", false
 	}
 	var v any
-	if json.Unmarshal(trimmed, &v) == nil {
-		switch val := v.(type) {
-		case float64:
-			if val == 0 {
-				return "", false
-			}
-		case string:
-			return val, val != ""
-		case []any:
-			if len(val) == 0 {
-				return "", false
-			}
-		case map[string]any:
-			if len(val) == 0 {
-				return "", false
-			}
-		}
+	if json.Unmarshal(raw, &v) != nil {
+		// The field is valid JSON by construction, so the only failure is a
+		// value we cannot inspect (a number outside float64's range); treat it
+		// as set.
+		return "", true
+	}
+	switch val := v.(type) {
+	case nil:
+		return "", false
+	case bool:
+		return "", val
+	case float64:
+		return "", val != 0
+	case string:
+		return val, val != ""
+	case []any:
+		return "", len(val) > 0
+	case map[string]any:
+		return "", len(val) > 0
 	}
 	return "", true
 }

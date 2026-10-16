@@ -328,9 +328,7 @@ func TestErrorBodyOn200IsAnError(t *testing.T) {
 	}
 }
 
-// TestErrorWithoutFeaturesIsAFailure pins the features-aware rule: an error
-// that is set and non-empty, string or not, fails the lookup when the body has
-// no features, so an unrecognised shape is never cached as a genuine no-match.
+// TestErrorWithoutFeaturesIsAFailure pins the result-count gate's failure side.
 func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -363,7 +361,6 @@ func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 	}
 }
 
-// TestEmptyErrorFieldIsAGenuineEmpty pins the other side.
 func TestEmptyErrorFieldIsAGenuineEmpty(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -412,8 +409,7 @@ func TestStringErrorWithFeaturesIsServed(t *testing.T) {
 }
 
 // TestErrorWithUnusableFeaturesIsAFailure pins the result-count gate: a feature
-// the mapping drops leaves no usable result, so a set error fails the lookup
-// rather than settling as a cached empty.
+// the mapping drops leaves no usable result, so a set error fails the lookup.
 func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
