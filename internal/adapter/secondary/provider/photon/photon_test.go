@@ -340,6 +340,10 @@ func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 		{name: "array", rawErr: `["limit_exceeded"]`},
 		{name: "number", rawErr: `7`},
 		{name: "true", rawErr: `true`},
+		{name: "number past float64", rawErr: `1e999`},
+		{name: "number past float64 again", rawErr: `1e309`},
+		{name: "negative number past float64", rawErr: `-1e999`},
+		{name: "number past float64 nested", rawErr: `{"code":1e999}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

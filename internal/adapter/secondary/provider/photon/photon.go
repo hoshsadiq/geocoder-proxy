@@ -189,7 +189,7 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	}
 	// A 200 that carries an error and no features is a failure, not an empty
 	// answer: an empty answer is cached and treated as final downstream, so a
-	// swallowed error would lose the point. Features win when both are present.
+	// swallowed error would lose the point.
 	if len(fc.Features) == 0 && errorFieldSet(fc.Error) {
 		if msg := errorMessage(fc.Error); msg != "" && httpfetch.SafeCode(msg) {
 			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
@@ -211,8 +211,6 @@ type featureCollection struct {
 	Error    json.RawMessage `json:"error"`
 }
 
-// The error field is raw because a 200 with a non-string error is not a decode
-// failure.
 func errorMessage(raw json.RawMessage) string {
 	var msg string
 	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {
@@ -221,17 +219,18 @@ func errorMessage(raw json.RawMessage) string {
 	return msg
 }
 
-// errorFieldSet reports whether a body's error field is set to a non-empty
-// value. An absent, null, false, zero, empty string or empty object/array is
-// not an error; anything else is, so an unrecognised error shape fails loudly
-// instead of reading as a genuine no-match and being cached.
+// An absent, null, false, zero, empty string or empty object/array is not an
+// error; anything else is, so an unrecognised error shape fails loudly instead
+// of reading as a genuine no-match and being cached.
 func errorFieldSet(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return false
+		// raw is valid JSON, so the only failure here is a number outside
+		// float64's range; a value we cannot inspect is treated as set.
+		return true
 	}
 	switch val := v.(type) {
 	case nil:
@@ -247,6 +246,8 @@ func errorFieldSet(raw json.RawMessage) bool {
 	case map[string]any:
 		return len(val) > 0
 	default:
+		// Unreachable for encoding/json output; an unknown type is treated as
+		// set, the safe direction.
 		return true
 	}
 }

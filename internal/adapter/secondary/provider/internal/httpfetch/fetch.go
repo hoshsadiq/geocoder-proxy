@@ -67,9 +67,10 @@ const maxRetries = 2
 // spending the provider's remaining allowance on retries that cannot succeed.
 // body is a prefix of the response, at most MaxErrorBodyBytes long; the returned
 // code names the provider's own error and must not carry coordinates, URLs or
-// credentials. The check must not keep the body or expect a second read.
-// Provider packages own their upstream's vocabulary and pass their check to Do;
-// a nil check retries every transient status as before.
+// credentials. The remainder of the response is drained after the check returns,
+// so the check must not keep the body or expect a second read. Provider packages
+// own their upstream's vocabulary and pass their check to Do; a nil check
+// retries every transient status as before.
 type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly

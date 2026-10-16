@@ -25,8 +25,8 @@ const (
 	ProviderEmpty ProviderOutcome = "empty"
 	// ProviderError: the provider call failed and the router moved on.
 	ProviderError ProviderOutcome = "error"
-	// ProviderQuotaExhausted: the provider was skipped for the rest of the
-	// UTC day.
+	// ProviderQuotaExhausted: the provider was skipped for the rest of its
+	// rolling 24-hour window.
 	ProviderQuotaExhausted ProviderOutcome = "quota_exhausted"
 	// ProviderPacingLimited: the rate limiter could not admit the call
 	// inside the caller's context, so the router moved on.

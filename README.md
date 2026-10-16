@@ -85,7 +85,7 @@ next provider's allowance and nothing is cached on that path.
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
 - Exposes Prometheus metrics for cache hits, per-provider latency, errors,
-  remaining quota, and terminal caps (`geocoder_provider_terminal_total`).
+  remaining quota, and 429 terminal caps (`geocoder_provider_terminal_total`).
 
 Providers are registered by type: `chibigeo` (which is Photon-shaped, so it
 fronts any Photon-compatible upstream), `geoapify`, `locationiq` and
