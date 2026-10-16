@@ -37,18 +37,26 @@ pushing a provider past its limit. AGENTS.md has the detail.
 
 ## Retries
 
-A provider call that fails in a way that might pass on its own — a dropped
-connection, a 5xx, a 429 that means "slow down" — is retried twice with a short
-backoff (half a second, then a second, with jitter). When the provider sends
-`Retry-After`, that wait is used instead, capped at 5 seconds so a long ask
-becomes a failover rather than a parked caller.
+A provider call that fails in a way that might pass on its own (a dropped
+connection, a 5xx, a 429 that means "slow down") is retried twice with a short
+backoff: half a second, then a second, with jitter. A `Retry-After` header is
+honoured instead, capped at 5 seconds. `upstream_timeout` (2s by default) bounds
+the whole attempt, wait included, so a `Retry-After` much above a second and a
+half leaves no room to retry and the lookup fails over instead.
 
-ChibiGeo is the exception. When it answers 429 with `limit_exceeded`,
-`quota_exceeded` or `subscription_past_due`, waiting will not clear it, so the
-proxy does not retry: the provider is asked once and the lookup moves to the
-next one, if there is one. That spares the lookup two retries and roughly a
-second and a half of backoff that cannot help it. A 429 the proxy does not
-recognise is treated as transient, exactly as before.
+A cap that waiting cannot clear is the exception. The Photon-shaped provider
+(`chibigeo`) does not retry ChibiGeo's `limit_exceeded`, `quota_exceeded` or
+`subscription_past_due` on a 429: the provider is asked once and the lookup
+moves to the next one, if there is one. That spares the lookup two retries and
+roughly a second and a half of backoff that cannot help it. A 429 whose body
+does not carry a recognised code is treated as transient, exactly as before, and
+a body that stalls is bounded by the attempt cap like any other slow response.
+The check is attached to the provider type, so every `chibigeo`-typed instance
+has it, whatever upstream it points at.
+
+A 200 whose body carries an `error` field is a failure, not an empty answer: an
+empty answer is cached and treated as final downstream, so a swallowed error
+would lose the point. Every provider package checks for it.
 
 ## What it does
 
@@ -65,8 +73,8 @@ recognise is treated as transient, exactly as before.
 - Never returns an empty result to hide a failure. An empty answer means a
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
-- Exposes Prometheus metrics for cache hits, per-provider latency, errors and
-  remaining quota.
+- Exposes Prometheus metrics for cache hits, per-provider latency, errors,
+  remaining quota, and terminal caps (`geocoder_provider_terminal_total`).
 
 Providers are registered by type: `chibigeo` (which is Photon-shaped, so it
 fronts any Photon-compatible upstream), `geoapify`, `locationiq` and
