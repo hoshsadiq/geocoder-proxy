@@ -7,6 +7,7 @@
 package photon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,11 +143,12 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
-// terminalCapCodes are the ChibiGeo error codes for a plan-side cap that
-// waiting cannot clear: the free plan's daily cap, an exhausted quota, a
-// suspended subscription. ChibiGeo documents them on the 429 body as
-// {"error":"limit_exceeded"}; a plain {"error":"rate_limited"} is not terminal
-// and keeps the retry path.
+// terminalCapCodes are the ChibiGeo error codes for a plan cap that waiting
+// cannot clear. limit_exceeded is the documented plan cap (the free plan resets
+// daily, paid plans on the billing anniversary) and is the one seen live: 429,
+// body {"error":"limit_exceeded"}, top level. subscription_past_due is terminal
+// by nature, since payment is needed. quota_exceeded is inferred. A code that
+// does not appear here is simply retried, never mishandled.
 var terminalCapCodes = map[string]struct{}{
 	"limit_exceeded":        {},
 	"quota_exceeded":        {},
@@ -155,7 +157,10 @@ var terminalCapCodes = map[string]struct{}{
 
 // terminalResponse classifies a non-200 response. Only a 429 carrying one of
 // the known cap codes is terminal; everything else, including an unrecognised
-// body and any other status, keeps today's retry behaviour.
+// body and any other status, keeps today's retry behaviour. httpfetch caps how
+// much of the body it offers, so the first JSON value is decoded rather than the
+// whole buffer unmarshalled: trailing bytes past the value do not matter, and a
+// value the cap cuts in half fails to decode and falls back to retrying.
 func terminalResponse(statusCode int, body []byte) (string, bool) {
 	if statusCode != http.StatusTooManyRequests {
 		return "", false
@@ -163,7 +168,7 @@ func terminalResponse(statusCode int, body []byte) (string, bool) {
 	var shape struct {
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &shape); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&shape); err != nil {
 		return "", false
 	}
 	if _, ok := terminalCapCodes[shape.Error]; !ok {
@@ -182,6 +187,17 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
 		return nil, err
 	}
+	// A 200 whose body carries an error is a failure, not an empty answer:
+	// an empty answer is cached cell-wide and Dawarich marks it final, so a
+	// swallowed error would lose the point for good. Geoapify, LocationIQ and
+	// Nominatim apply the same check. Only an identifier-shaped code is echoed;
+	// anything else must not carry coordinates or credentials into the error.
+	if fc.Error != "" {
+		if httpfetch.SafeCode(fc.Error) {
+			return nil, fmt.Errorf("upstream returned an error response: %s", fc.Error)
+		}
+		return nil, errors.New("upstream returned an error response")
+	}
 	results := make([]domain.Result, 0, len(fc.Features))
 	for _, f := range fc.Features {
 		if r, ok := f.toResult(); ok {
@@ -191,9 +207,11 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	return results, nil
 }
 
-// featureCollection is the Photon wire shape.
+// featureCollection is the Photon wire shape. Error carries a 200 response
+// that reports a failure instead of features; it is never set on a real answer.
 type featureCollection struct {
 	Features []feature `json:"features"`
+	Error    string    `json:"error"`
 }
 
 type feature struct {

@@ -1,9 +1,13 @@
 package photon
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,6 +176,138 @@ func TestRetryPolicyByResponseBody(t *testing.T) {
 				is.NotContains(err.Error(), srv.URL, "provider errors never carry the request URL")
 			}
 			is.Equal(tt.wantCalls, calls.Load(), "upstream requests for this provider")
+		})
+	}
+}
+
+// alwaysCapped answers every request with a 429 carrying body and counts them,
+// so a test can assert the exact number of upstream requests a body shape makes.
+func alwaysCapped(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, calls
+}
+
+// TestTerminalCapBodyLongerThanThePrefix pins that classification survives the
+// httpfetch body cap (4KiB): the first JSON value is decoded, so trailing bytes
+// past it do not matter. Each body must still make exactly one request.
+func TestTerminalCapBodyLongerThanThePrefix(t *testing.T) {
+	const cap = 4096
+	base := `{"error":"limit_exceeded"}`
+	tests := []struct {
+		name string
+		size int
+	}{
+		{name: "exactly the cap", size: cap},
+		{name: "one past the cap", size: cap + 1},
+		{name: "eight kilobytes", size: 8192},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			body := base + strings.Repeat("x", tt.size-len(base))
+			must.Len(body, tt.size)
+			srv, calls := alwaysCapped(t, body)
+			c := newTestClient(t, srv.URL, "")
+
+			_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Contains(err.Error(), "limit_exceeded", "the code survives a body past the prefix")
+			is.Equal(int32(1), calls.Load(), "a long body must not fall back to retrying")
+		})
+	}
+}
+
+// TestTerminalCapBodyGzipped pins that a compressed response is decoded before
+// classification, not treated as opaque bytes.
+func TestTerminalCapBodyGzipped(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write([]byte(`{"error":"limit_exceeded"}`))
+	must.NoError(zw.Close())
+
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write(gz.Bytes())
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Contains(err.Error(), "limit_exceeded")
+	is.Equal(int32(1), calls.Load())
+}
+
+// TestTerminalCapBodyChunked pins that a chunked response classified before its
+// last chunk arrives still ends the call.
+func TestTerminalCapBodyChunked(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fl, _ := w.(http.Flusher)
+		for _, part := range []string{`{"error":`, `"limit_`, `exceeded"}`} {
+			_, _ = io.WriteString(w, part)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Contains(err.Error(), "limit_exceeded")
+	is.Equal(int32(1), calls.Load())
+}
+
+// TestErrorBodyOn200IsAnError covers the parity gap with the other three
+// providers: a 200 carrying an error must fail the lookup, never read as a
+// genuine empty answer, which is cached cell-wide and never retried downstream.
+func TestErrorBodyOn200IsAnError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "identifier code is echoed", body: `{"error":"limit_exceeded"}`, want: "upstream returned an error response: limit_exceeded"},
+		{name: "unrecognised text is not echoed", body: `{"error":"lat=51.4774 key=SUPERSECRET"}`, want: "upstream returned an error response"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			calls := &atomic.Int32{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL, "")
+			got, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Nil(got)
+			is.Equal(tt.want, err.Error())
+			is.NotContains(err.Error(), "51.4774")
+			is.NotContains(err.Error(), "SUPERSECRET")
+			is.Equal(int32(1), calls.Load(), "a 200 is not retried")
 		})
 	}
 }

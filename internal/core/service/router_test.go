@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -74,6 +75,7 @@ type fakeMetrics struct {
 	calls         []providerCall
 	lookups       []port.LookupResult
 	quotas        []quotaCall
+	terminals     []string
 }
 
 func (m *fakeMetrics) CacheLookup(outcome port.CacheOutcome) {
@@ -90,6 +92,10 @@ func (m *fakeMetrics) Lookup(result port.LookupResult) {
 
 func (m *fakeMetrics) QuotaRemaining(name string, remaining int) {
 	m.quotas = append(m.quotas, quotaCall{name: name, remaining: remaining})
+}
+
+func (m *fakeMetrics) TerminalCap(name string) {
+	m.terminals = append(m.terminals, name)
 }
 
 type fakeLimiter struct {
@@ -376,6 +382,20 @@ func TestReverseFailures(t *testing.T) {
 			is.Equal(tt.wantOutcomes, outcomesOf(metrics))
 		})
 	}
+}
+
+func TestReverseTerminalCapCounted(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	cache, metrics := newFakeCache(), &fakeMetrics{}
+	terminal := reverseGeocoder("p1", nil, fmt.Errorf("upstream status 429: limit_exceeded (%w)", domain.ErrProviderTerminalCap))
+	answer := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
+	r := newRouter(cache, metrics, Provider{Geocoder: terminal}, Provider{Geocoder: answer})
+
+	got, err := r.Reverse(t.Context(), query(cellNear))
+	must.NoError(err)
+	is.NotEmpty(got, "the healthy provider still answers")
+	is.Equal([]string{"p1"}, metrics.terminals, "a terminal cap is counted against the instance that produced it")
+	is.Equal([]port.ProviderOutcome{port.ProviderError, port.ProviderSuccess}, outcomesOf(metrics), "and still counts as a provider error")
 }
 
 func TestReverseKeys(t *testing.T) {

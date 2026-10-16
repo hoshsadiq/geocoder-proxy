@@ -17,11 +17,12 @@ var _ port.Metrics = (*Metrics)(nil)
 
 // Metrics implements port.Metrics on a Prometheus registry.
 type Metrics struct {
-	cacheLookups    *prom.CounterVec
-	providerCalls   *prom.CounterVec
-	providerLatency *prom.HistogramVec
-	quotaRemaining  *prom.GaugeVec
-	lookupCalls     *prom.CounterVec
+	cacheLookups     *prom.CounterVec
+	providerCalls    *prom.CounterVec
+	providerLatency  *prom.HistogramVec
+	quotaRemaining   *prom.GaugeVec
+	lookupCalls      *prom.CounterVec
+	providerTerminal *prom.CounterVec
 }
 
 // New registers the metrics on reg (pass prom.DefaultRegisterer in
@@ -63,6 +64,13 @@ func New(reg prom.Registerer) *Metrics {
 			Name:      "lookups_total",
 			Help:      "Lookups by result (ok, empty, failed).",
 		}, []string{"result"}),
+		// Terminal caps, a sub-count of provider errors:
+		// sum by (provider) (rate(geocoder_provider_terminal_total[5m]))
+		providerTerminal: factory.NewCounterVec(prom.CounterOpts{
+			Namespace: "geocoder",
+			Name:      "provider_terminal_total",
+			Help:      "Provider responses that will not clear by retrying, by provider.",
+		}, []string{"provider"}),
 	}
 }
 
@@ -90,4 +98,9 @@ func (m *Metrics) QuotaRemaining(provider string, remaining int) {
 // Lookup records one lookup's result.
 func (m *Metrics) Lookup(result port.LookupResult) {
 	m.lookupCalls.WithLabelValues(string(result)).Inc()
+}
+
+// TerminalCap records one provider response that will not clear by retrying.
+func (m *Metrics) TerminalCap(provider string) {
+	m.providerTerminal.WithLabelValues(provider).Inc()
 }

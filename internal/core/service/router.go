@@ -370,6 +370,11 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Co
 			if done, doneErr := r.budgetCut(ctx, name, d); done {
 				return zero, doneErr
 			}
+			// A cap that waiting will not clear is still an error; count it
+			// separately so the terminal path is visible on its own.
+			if errors.Is(err, domain.ErrProviderTerminalCap) {
+				r.metrics.TerminalCap(name)
+			}
 			r.metrics.ProviderRequest(name, port.ProviderError, d)
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 			continue

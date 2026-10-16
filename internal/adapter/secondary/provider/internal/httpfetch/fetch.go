@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
 // maxBodyBytes caps one upstream response. Geocoding answers are kilobytes;
@@ -65,8 +67,10 @@ const maxRetries = 2
 // instead of spending the provider's remaining allowance on retries that cannot
 // succeed. body is a small prefix of the response; the returned code names the
 // provider's own error and must not carry coordinates, URLs or credentials.
-// Provider packages own their upstream's vocabulary and pass their check to Do;
-// a nil check retries every transient status as before.
+// The underlying response body is fully read into that prefix and then drained
+// and closed after the check returns, so the check must not keep it or expect a
+// second read. Provider packages own their upstream's vocabulary and pass their
+// check to Do; a nil check retries every transient status as before.
 type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
@@ -111,7 +115,10 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 
 	if resp.StatusCode != http.StatusOK {
 		if code, ok := classifyTerminal(terminal, resp); ok {
-			return fmt.Errorf("upstream status %d: %s", resp.StatusCode, code)
+			if code == "" {
+				return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminalCap)
+			}
+			return fmt.Errorf("upstream status %d: %s (%w)", resp.StatusCode, code, domain.ErrProviderTerminalCap)
 		}
 		if retryableStatus(resp.StatusCode) && attempt < maxRetries {
 			if !sleep(ctx, backoff(attempt, retryAfterHeader(resp.Header.Get("Retry-After")))) {
@@ -149,7 +156,8 @@ func retryableTransport(ctx context.Context, err error) bool {
 
 // classifyTerminal asks the provider's check about a non-200 response, reading
 // at most maxErrorBodyBytes so a huge error page is never buffered. A nil check
-// or a read failure is "not terminal", which keeps the retry path.
+// or a read failure is "not terminal", which keeps the retry path. A terminal
+// outcome is kept even when its code is not safe to echo.
 func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
 	if check == nil {
 		return "", false
@@ -158,7 +166,30 @@ func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return check(resp.StatusCode, body)
+	code, terminal := check(resp.StatusCode, body)
+	if !terminal {
+		return "", false
+	}
+	if !SafeCode(code) {
+		return "", true
+	}
+	return code, true
+}
+
+// SafeCode reports whether a provider's error code is safe to put into an error
+// that reaches WARN logs: a short lowercase identifier, the shape every provider
+// error code has. Anything else is dropped or replaced by a generic message, so
+// a provider cannot smuggle a URL, a coordinate or a credential into the text.
+func SafeCode(code string) bool {
+	if code == "" || len(code) > 40 {
+		return false
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // retryableStatus limits retries to server errors (a blip) and 429 (the
