@@ -5,7 +5,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,51 +60,15 @@ func TestTerminalResponseNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	check := func(statusCode int, body []byte) (string, bool) {
-		if statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}` {
-			return "limit_exceeded", true
-		}
-		return "", false
+	check := func(statusCode int, body []byte) bool {
+		return statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}`
 	}
 
 	var out struct{}
 	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
 	must.Error(err)
-	is.Equal("upstream status 429: limit_exceeded (terminal provider failure)", err.Error(), "the error carries the provider's code")
+	is.Equal("upstream status 429 (terminal provider failure)", err.Error(), "a generic terminal message, no upstream text")
 	is.Equal(int32(1), calls.Load(), "a terminal response is not retried")
-}
-
-// TestTerminalCodeSanitised pins the code-only rule at the httpfetch seam: a
-// check cannot put arbitrary text into an error that reaches logs.
-func TestTerminalCodeSanitised(t *testing.T) {
-	tests := []struct {
-		name string
-		code string
-	}{
-		{name: "empty", code: ""},
-		{name: "uppercase", code: "LIMIT_EXCEEDED"},
-		{name: "coordinates and key", code: "lat=51.4774&key=SUPERSECRET"},
-		{name: "too long", code: strings.Repeat("a", 41)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			is, must := assert.New(t), require.New(t)
-			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				calls.Add(1)
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":"x"}`))
-			}))
-			defer srv.Close()
-
-			check := func(int, []byte) (string, bool) { return tt.code, true }
-			var out struct{}
-			err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
-			must.Error(err)
-			is.Equal("upstream status 429 (terminal provider failure)", err.Error(), "the unsafe code is dropped, the terminal outcome kept")
-			is.Equal(int32(1), calls.Load())
-		})
-	}
 }
 
 func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
@@ -119,11 +82,8 @@ func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	check := func(statusCode int, body []byte) (string, bool) {
-		if statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}` {
-			return "limit_exceeded", true
-		}
-		return "", false
+	check := func(statusCode int, body []byte) bool {
+		return statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}`
 	}
 
 	var out struct{}
@@ -146,9 +106,9 @@ func TestTerminalCheckBodyIsCapped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	check := func(_ int, body []byte) (string, bool) {
+	check := func(_ int, body []byte) bool {
 		gotLen.Store(int32(len(body)))
-		return "", false
+		return false
 	}
 	var out struct{}
 	must.Error(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check))
@@ -165,7 +125,7 @@ func TestNonTerminalCheckKeepsRetrying(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	check := func(int, []byte) (string, bool) { return "", false }
+	check := func(int, []byte) bool { return false }
 
 	var out struct{}
 	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)

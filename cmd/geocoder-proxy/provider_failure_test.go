@@ -68,7 +68,7 @@ func TestTerminalCapFailsOverImmediately(t *testing.T) {
 func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	first, firstCalls := cappedUpstream(t, `{"error":"limit_exceeded"}`)
-	second, secondCalls := cappedUpstream(t, `{"error":"subscription_past_due"}`)
+	second, secondCalls := cappedUpstream(t, `{"error":"limit_exceeded"}`)
 	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout,
 		providerAt(t, first.URL), providerAt(t, second.URL))
 

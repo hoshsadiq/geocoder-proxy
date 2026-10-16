@@ -44,22 +44,26 @@ honoured instead, capped at 5 seconds. `upstream_timeout` (2s by default) bounds
 the whole attempt, wait included, so a `Retry-After` much above a second and a
 half leaves no room to retry and the lookup fails over instead.
 
-A cap that waiting cannot clear is the exception. The Photon-shaped provider
-(`chibigeo`) does not retry ChibiGeo's `limit_exceeded`, `quota_exceeded` or
-`subscription_past_due` on a 429: the provider is asked once and the lookup
-moves to the next one, if there is one. Only `limit_exceeded` is documented as
-a plan cap; the other two are treated as terminal on the assumption that
-waiting cannot clear them. That spares the lookup two retries and
-roughly a second and a half of backoff that cannot help it. A 429 whose body
-does not carry a recognised code is treated as transient, exactly as before, and
-a body that stalls is bounded by the attempt cap like any other slow response.
-The check is attached to the provider type, so every `chibigeo`-typed instance
-has it, whatever upstream it points at.
+A cap that waiting cannot clear is the exception. ChibiGeo documents exactly one
+such error on its geocoding endpoint: `limit_exceeded`, a plan cap on a 429
+whose own docs say retrying after a second does not reset the quota. The
+Photon-shaped provider (`chibigeo`) does not retry it: the provider is asked
+once and the lookup moves to the next one, if there is one. That spares the
+lookup two retries and roughly a second and a half of backoff that cannot help
+it. Every other documented error is transient and retried by the rule above,
+including `rate_limited` (429), `service_unavailable` (503) and `gateway_timeout`
+(504). A 429 whose body carries no recognised cap is transient too, and a body
+that stalls is bounded by the attempt cap like any other slow response. The check
+is attached to the provider type, so every `chibigeo`-typed instance has it,
+whatever upstream it points at.
 
 A 200 whose body carries an `error` is a failure, not an empty answer: an empty
 answer is cached and treated as final downstream, so a swallowed error would
-lose the point. AGENTS.md has the per-adapter detail; the Photon-shaped provider
-is features-aware, so features are served when at least one of them is usable.
+lose the point. Photon itself never does this, its 200 bodies are always a
+FeatureCollection (empty for no match) and its errors are `message` on a
+non-200; the guard is for ChibiGeo's wrapper. The Photon-shaped provider is
+features-aware, so features are served when at least one of them is usable.
+AGENTS.md has the per-adapter detail.
 
 One cost is easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance

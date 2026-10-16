@@ -65,20 +65,18 @@ const maxRetries = 2
 // failure (domain.ErrProviderTerminal), one that will not clear by retrying.
 // Such a response ends the call at once so the router fails over, instead of
 // spending the provider's remaining allowance on retries that cannot succeed.
-// body is a prefix of the response, at most MaxErrorBodyBytes long; the returned
-// code names the provider's own error and must not carry coordinates, URLs or
-// credentials. The check gets a private copy of that prefix, so keeping it is
-// harmless, but the response stream is not available again. Provider packages
-// own their upstream's vocabulary and pass their check to Do; a nil check
-// retries every transient status.
-type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
+// body is a prefix of the response, at most MaxErrorBodyBytes long. The check
+// gets a private copy of that prefix, so keeping it is harmless, but the
+// response stream is not available again. Provider packages own their upstream's
+// vocabulary and pass their check to Do; a nil check retries every transient
+// status.
+type TerminalCheck func(statusCode int, body []byte) bool
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
 // transient failures (transport errors, 5xx, 429) with bounded backoff. A
 // non-200 response the check reports as terminal is returned at once, without a
-// retry. A non-200 status is an error carrying only the status code, or the
-// provider's own code for a terminal response. Response bodies are drained and
-// closed on every path.
+// retry. A non-200 status is an error carrying only the status code. Response
+// bodies are drained and closed on every path.
 func Do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any, terminal TerminalCheck) error {
 	return do(ctx, client, rawURL, headers, out, terminal, 0)
 }
@@ -114,11 +112,8 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		if code, ok := classifyTerminal(terminal, resp); ok {
-			if code == "" {
-				return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminal)
-			}
-			return fmt.Errorf("upstream status %d: %s (%w)", resp.StatusCode, code, domain.ErrProviderTerminal)
+		if classifyTerminal(terminal, resp) {
+			return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminal)
 		}
 		if retryableStatus(resp.StatusCode) && attempt < maxRetries {
 			if !sleep(ctx, backoff(attempt, retryAfterHeader(resp.Header.Get("Retry-After")))) {
@@ -156,41 +151,16 @@ func retryableTransport(ctx context.Context, err error) bool {
 
 // classifyTerminal asks the provider's check about a non-200 response, reading
 // at most MaxErrorBodyBytes so a huge error page is never buffered. A nil check
-// or a read failure is "not terminal", which keeps the retry path. A terminal
-// outcome is kept even when its code is not safe to echo.
-func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
+// or a read failure is "not terminal", which keeps the retry path.
+func classifyTerminal(check TerminalCheck, resp *http.Response) bool {
 	if check == nil {
-		return "", false
+		return false
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 	if err != nil {
-		return "", false
-	}
-	code, terminal := check(resp.StatusCode, body)
-	if !terminal {
-		return "", false
-	}
-	if !SafeCode(code) {
-		return "", true
-	}
-	return code, true
-}
-
-// SafeCode reports whether a provider's error code, or the message it reports
-// for a 200 error, is safe to put into an error that reaches WARN logs: a short
-// lowercase identifier, the shape every provider error code has. Anything else
-// is dropped or replaced by a generic message, so it cannot smuggle a URL, a
-// coordinate or a credential into the text.
-func SafeCode(code string) bool {
-	if code == "" || len(code) > 40 {
 		return false
 	}
-	for _, r := range code {
-		if (r < 'a' || r > 'z') && r != '_' {
-			return false
-		}
-	}
-	return true
+	return check(resp.StatusCode, body)
 }
 
 // retryableStatus limits retries to server errors (a blip) and 429 (the

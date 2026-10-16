@@ -143,38 +143,29 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
-// terminalCodes are the ChibiGeo error codes for a plan cap that waiting
-// cannot clear. A wrong entry only costs the retries we already had, so the
-// list errs towards including a terminal code.
-var terminalCodes = map[string]struct{}{
-	// Confirmed: the documented plan cap, seen live as 429 {"error":"limit_exceeded"}.
-	"limit_exceeded": {},
-	// Inferred: an exhausted allowance, not observed.
-	"quota_exceeded": {},
-	// Terminal by nature (payment is needed), not observed.
-	"subscription_past_due": {},
-}
+// terminalCapCode is ChibiGeo's documented plan cap. Its docs say retrying
+// after a second does not reset the quota, and it is the only geocoding error
+// that waiting cannot clear (the docs' other errors are rate_limited, the three
+// auth/backend failures, and 503/504, all transient).
+const terminalCapCode = "limit_exceeded"
 
-// terminalResponse classifies a non-200 response. Only a 429 carrying one of
-// the known terminal codes is terminal; everything else, including an unrecognised
-// body and any other status, takes the ordinary retry path. httpfetch caps how
-// much of the body it offers, so the first JSON value is decoded rather than the
-// whole buffer unmarshalled: trailing bytes past the value do not matter, and a
-// value the cap cuts in half fails to decode and falls back to retrying.
-func terminalResponse(statusCode int, body []byte) (string, bool) {
+// terminalResponse classifies a non-200 response. Only a 429 carrying the plan
+// cap is terminal; everything else, including an unrecognised body and any
+// other status, takes the ordinary retry path. httpfetch caps how much of the
+// body it offers, so the first JSON value is decoded rather than the whole
+// buffer unmarshalled: trailing bytes past the value do not matter, and a value
+// the cap cuts in half fails to decode and falls back to retrying.
+func terminalResponse(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests {
-		return "", false
+		return false
 	}
-	var shape struct {
+	var errBody struct {
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&shape); err != nil {
-		return "", false
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
+		return false
 	}
-	if _, ok := terminalCodes[shape.Error]; !ok {
-		return "", false
-	}
-	return shape.Error, true
+	return errBody.Error == terminalCapCode
 }
 
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
@@ -193,59 +184,22 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 			results = append(results, r)
 		}
 	}
-	// A 200 whose error is set and yields no usable result is a failure. The
-	// length check comes first: parsing the error value can allocate on a large
-	// unusable error field, and a response that yields a result never needs to.
-	if len(results) == 0 {
-		if msg, set := errorValue(fc.Error); set {
-			if msg != "" && httpfetch.SafeCode(msg) {
-				return nil, fmt.Errorf("upstream returned an error response: %s", msg)
-			}
-			return nil, errors.New("upstream returned an error response")
-		}
+	// A 200 that carries an error and yields no usable result is a failure, not
+	// a cached empty. This guards ChibiGeo's wrapper, not Photon: Photon answers
+	// 200 with a FeatureCollection (empty for no match) and puts errors in
+	// `message` on a non-200.
+	if fc.Error != nil && *fc.Error != "" && len(results) == 0 {
+		return nil, errors.New("upstream returned an error response")
 	}
 	return results, nil
 }
 
-// featureCollection is the Photon wire shape.
+// featureCollection is the Photon wire shape. The API documents error as a
+// string, so a non-string value is a decode failure rather than a silent
+// no-match.
 type featureCollection struct {
 	Features []feature `json:"features"`
-	// Raw so a 200 with a non-string error is not a decode failure.
-	Error json.RawMessage `json:"error"`
-}
-
-// errorValue returns the body's error message when the field is a non-empty
-// JSON string, and whether the field is set to a non-empty value. A value that
-// cannot be inspected is treated as set, and an absent or empty value (null,
-// false, zero, an empty string, an empty object or array) as unset, so an
-// unrecognised error shape fails loudly instead of reading as a genuine
-// no-match and being cached.
-func errorValue(raw json.RawMessage) (msg string, set bool) {
-	if len(raw) == 0 {
-		return "", false
-	}
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
-		// The field is valid JSON by construction, so the only failure is a
-		// value we cannot inspect (a number outside float64's range); treat it
-		// as set.
-		return "", true
-	}
-	switch val := v.(type) {
-	case nil:
-		return "", false
-	case bool:
-		return "", val
-	case float64:
-		return "", val != 0
-	case string:
-		return val, val != ""
-	case []any:
-		return "", len(val) > 0
-	case map[string]any:
-		return "", len(val) > 0
-	}
-	return "", true
+	Error    *string   `json:"error"`
 }
 
 type feature struct {
