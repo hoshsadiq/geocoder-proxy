@@ -28,7 +28,6 @@ func cappedUpstream(t *testing.T, body string) (*httptest.Server, *atomic.Int32)
 	return srv, calls
 }
 
-// terminalCount sums the terminal-cap counter across providers.
 func terminalCount(t *testing.T, reg *prom.Registry) int {
 	t.Helper()
 	families, err := reg.Gather()

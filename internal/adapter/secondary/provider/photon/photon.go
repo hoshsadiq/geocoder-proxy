@@ -144,14 +144,14 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 }
 
 // terminalCapCodes are the ChibiGeo error codes for a plan cap that waiting
-// cannot clear. limit_exceeded is the documented plan cap (the free plan resets
-// daily, paid plans on the billing anniversary) and is the one seen live: 429,
-// body {"error":"limit_exceeded"}, top level. subscription_past_due is terminal
-// by nature, since payment is needed. quota_exceeded is inferred. A code that
-// does not appear here is simply retried, never mishandled.
+// cannot clear. A wrong entry only costs the retries we already had, so the
+// list errs towards including a terminal code.
 var terminalCapCodes = map[string]struct{}{
-	"limit_exceeded":        {},
-	"quota_exceeded":        {},
+	// Confirmed: the documented plan cap, seen live as 429 {"error":"limit_exceeded"}.
+	"limit_exceeded": {},
+	// Inferred: an exhausted allowance, not observed.
+	"quota_exceeded": {},
+	// Terminal by nature (payment is needed), not observed.
 	"subscription_past_due": {},
 }
 
@@ -187,11 +187,8 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
 		return nil, err
 	}
-	// A 200 whose body carries an error is a failure, not an empty answer:
-	// an empty answer is cached cell-wide and Dawarich marks it final, so a
-	// swallowed error would lose the point for good. Geoapify, LocationIQ and
-	// Nominatim apply the same check. Only an identifier-shaped code is echoed;
-	// anything else must not carry coordinates or credentials into the error.
+	// A 200 carrying an error is a failure, not an empty answer: an empty
+	// answer is cached and treated as final downstream.
 	if fc.Error != "" {
 		if httpfetch.SafeCode(fc.Error) {
 			return nil, fmt.Errorf("upstream returned an error response: %s", fc.Error)
@@ -207,8 +204,7 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	return results, nil
 }
 
-// featureCollection is the Photon wire shape. Error carries a 200 response
-// that reports a failure instead of features; it is never set on a real answer.
+// featureCollection is the Photon wire shape.
 type featureCollection struct {
 	Features []feature `json:"features"`
 	Error    string    `json:"error"`
