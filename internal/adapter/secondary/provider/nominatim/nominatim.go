@@ -210,7 +210,7 @@ func (c *Client) get(ctx context.Context, path string, v url.Values, out any) er
 	}
 	headers := map[string]string{"User-Agent": c.userAgent}
 	// The router prefixes provider errors with the provider name.
-	return httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, out)
+	return httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, out, nil)
 }
 
 // place is the Nominatim wire shape. Lat/Lon arrive as strings.

@@ -201,7 +201,7 @@ func errorBodyMessage(raw json.RawMessage) string {
 func (c *Client) get(ctx context.Context, path string, v url.Values, out any) error {
 	v.Set("key", c.apiKey)
 	// The router prefixes provider errors with the provider name.
-	return httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, out)
+	return httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, out, nil)
 }
 
 // place is the LocationIQ wire shape (Nominatim-compatible). Lat, lon and

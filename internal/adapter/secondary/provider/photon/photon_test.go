@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,6 +112,83 @@ func TestUpstreamErrorIsCoordinateFree(t *testing.T) {
 	is.Contains(err.Error(), "429")
 	is.NotContains(err.Error(), "51.4774", "provider errors must never carry coordinates")
 	is.NotContains(err.Error(), srv.URL, "provider errors must never carry the request URL")
+}
+
+// cappedUpstream answers the first request with a 429 carrying body, then a
+// genuine empty Photon answer, and counts the requests. A terminal response
+// leaves the count at one; anything retried reaches the second request and
+// succeeds.
+func cappedUpstream(t *testing.T, body string, retryAfter string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, calls
+}
+
+// TestRetryPolicyByResponseBody pins which 429 bodies end the call: ChibiGeo's
+// cap codes are terminal (one request, then failover), while a plain rate limit
+// or an unrecognised body keeps today's retry.
+func TestRetryPolicyByResponseBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantCalls int32
+		wantCode  string // "" means the retried second request answers 200
+	}{
+		{name: "plan cap is terminal", body: `{"error":"limit_exceeded"}`, wantCalls: 1, wantCode: "limit_exceeded"},
+		{name: "quota exceeded is terminal", body: `{"error":"quota_exceeded"}`, wantCalls: 1, wantCode: "quota_exceeded"},
+		{name: "past-due subscription is terminal", body: `{"error":"subscription_past_due"}`, wantCalls: 1, wantCode: "subscription_past_due"},
+		{name: "rate limited is retried", body: `{"error":"rate_limited"}`, wantCalls: 2},
+		{name: "unknown error code is retried", body: `{"error":"over_query_limit"}`, wantCalls: 2},
+		{name: "non-JSON error body is retried", body: `<html>slow down</html>`, wantCalls: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv, calls := cappedUpstream(t, tt.body, "")
+			c := newTestClient(t, srv.URL, "")
+
+			_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			if tt.wantCode == "" {
+				must.NoError(err, "a non-terminal 429 is retried and the second attempt succeeds")
+			} else {
+				must.Error(err)
+				is.Contains(err.Error(), "429")
+				is.Contains(err.Error(), tt.wantCode)
+				is.NotContains(err.Error(), "51.4774", "provider errors never carry coordinates")
+				is.NotContains(err.Error(), srv.URL, "provider errors never carry the request URL")
+			}
+			is.Equal(tt.wantCalls, calls.Load(), "upstream requests for this provider")
+		})
+	}
+}
+
+// TestRateLimitedRetryAfterHonoured pins that a non-terminal 429 still waits
+// the provider's Retry-After before the retry.
+func TestRateLimitedRetryAfterHonoured(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv, calls := cappedUpstream(t, `{"error":"rate_limited"}`, "1")
+	c := newTestClient(t, srv.URL, "")
+
+	start := time.Now()
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+
+	must.NoError(err)
+	is.Equal(int32(2), calls.Load())
+	is.GreaterOrEqual(time.Since(start), time.Second, "the retry waits at least the provider's Retry-After")
 }
 
 func TestEmptyFeatureCollectionIsGenuineEmpty(t *testing.T) {

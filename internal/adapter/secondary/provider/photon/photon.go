@@ -142,6 +142,36 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
+// terminalCapCodes are the ChibiGeo error codes for a plan-side cap that
+// waiting cannot clear: the free plan's daily cap, an exhausted quota, a
+// suspended subscription. ChibiGeo documents them on the 429 body as
+// {"error":"limit_exceeded"}; a plain {"error":"rate_limited"} is not terminal
+// and keeps the retry path.
+var terminalCapCodes = map[string]struct{}{
+	"limit_exceeded":        {},
+	"quota_exceeded":        {},
+	"subscription_past_due": {},
+}
+
+// terminalResponse classifies a non-200 response. Only a 429 carrying one of
+// the known cap codes is terminal; everything else, including an unrecognised
+// body and any other status, keeps today's retry behaviour.
+func terminalResponse(statusCode int, body []byte) (string, bool) {
+	if statusCode != http.StatusTooManyRequests {
+		return "", false
+	}
+	var shape struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return "", false
+	}
+	if _, ok := terminalCapCodes[shape.Error]; !ok {
+		return "", false
+	}
+	return shape.Error, true
+}
+
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
 	headers := map[string]string{}
 	if c.apiKey != "" {
@@ -149,7 +179,7 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	}
 	var fc featureCollection
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc); err != nil {
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
 		return nil, err
 	}
 	results := make([]domain.Result, 0, len(fc.Features))

@@ -35,6 +35,21 @@ batch of lookups queues up and the last in the batch can spend the whole budget
 waiting for its turn. Those answer 503 and get retried, which is better than
 pushing a provider past its limit. AGENTS.md has the detail.
 
+## Retries
+
+A provider call that fails in a way that might pass on its own — a dropped
+connection, a 5xx, a 429 that means "slow down" — is retried twice with a short
+backoff (half a second, then a second, with jitter). When the provider sends
+`Retry-After`, that wait is used instead, capped at 5 seconds so a long ask
+becomes a failover rather than a parked caller.
+
+ChibiGeo is the exception. When it answers 429 with `limit_exceeded`,
+`quota_exceeded` or `subscription_past_due`, waiting will not clear it, so the
+proxy does not retry: the provider is asked once and the lookup moves to the
+next one. That stops a provider at its plan cap from spending its remaining
+allowance on retries that cannot succeed. A 429 the proxy does not recognise is
+treated as transient, exactly as before.
+
 ## What it does
 
 - Answers `GET /reverse` and `GET /api` as GeoJSON in the shape Dawarich
