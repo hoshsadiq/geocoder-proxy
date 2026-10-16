@@ -63,6 +63,8 @@ const maxRetries = 2
 
 // TerminalCheck reports whether a non-200 response is a terminal provider
 // failure (domain.ErrProviderTerminal), one that will not clear by retrying.
+// Nothing in this package echoes upstream text: the terminal and decode errors
+// are built from the status, the Go type and an offset.
 // Such a response ends the call at once so the router fails over, instead of
 // spending the provider's remaining allowance on retries that cannot succeed.
 // body is a prefix of the response, at most MaxErrorBodyBytes long. The check
@@ -126,7 +128,7 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 
 	dec := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes))
 	if err := dec.Decode(out); err != nil {
-		return fmt.Errorf("decoding upstream response: %w", err)
+		return decodeError(err)
 	}
 	// A well-formed response is exactly one JSON document; trailing bytes
 	// mean a mangled or stitched body and must not pass as an answer.
@@ -134,6 +136,17 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 		return errors.New("decoding upstream response: trailing data after JSON document")
 	}
 	return nil
+}
+
+// decodeError describes a decode failure without echoing the body. The stdlib
+// error renders the offending value, which can carry a credential or a
+// coordinate and is bounded only by the body cap, so only the Go type and
+// offset survive; the JSON kind is not included either.
+func decodeError(err error) error {
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return fmt.Errorf("decoding upstream response: cannot unmarshal into %s at offset %d", typeErr.Type, typeErr.Offset)
+	}
+	return errors.New("decoding upstream response: malformed JSON")
 }
 
 // retryableTransport reports whether a transport-level failure is worth

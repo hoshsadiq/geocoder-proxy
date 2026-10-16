@@ -143,10 +143,11 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
-// terminalCapCode is ChibiGeo's documented plan cap. Its docs say retrying
-// after a second does not reset the quota, and it is the only geocoding error
-// that waiting cannot clear (the docs' other errors are rate_limited, the three
-// auth/backend failures, and 503/504, all transient).
+// terminalCapCode is ChibiGeo's documented plan cap, the only geocoding error
+// its docs say waiting cannot clear ("retrying after a second does not reset
+// that quota"). The endpoint's other errors are the two 401s
+// (missing_api_key, invalid_api_key), 429 rate_limited, 503 service_unavailable
+// and 504 gateway_timeout; none is terminal.
 const terminalCapCode = "limit_exceeded"
 
 // terminalResponse classifies a non-200 response. Only a 429 carrying the plan

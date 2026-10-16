@@ -50,20 +50,28 @@ whose own docs say retrying after a second does not reset the quota. The
 Photon-shaped provider (`chibigeo`) does not retry it: the provider is asked
 once and the lookup moves to the next one, if there is one. That spares the
 lookup two retries and roughly a second and a half of backoff that cannot help
-it. Every other documented error is transient and retried by the rule above,
-including `rate_limited` (429), `service_unavailable` (503) and `gateway_timeout`
-(504). A 429 whose body carries no recognised cap is transient too, and a body
-that stalls is bounded by the attempt cap like any other slow response. The check
-is attached to the provider type, so every `chibigeo`-typed instance has it,
-whatever upstream it points at.
+it. Every other documented error is retried by the rule above, including
+`rate_limited` (429), `service_unavailable` (503) and `gateway_timeout` (504).
+The two 401 auth errors are not retried and not transient: the retry rule covers
+429 and 5xx, so a 401 fails once and moves to the next provider. A 429 whose
+body carries no recognised cap is transient too, and a body that stalls is
+bounded by the attempt cap like any other slow response. The check is attached
+to the provider type, so every `chibigeo`-typed instance has it, whatever
+upstream it points at.
 
 A 200 whose body carries an `error` is a failure, not an empty answer: an empty
 answer is cached and treated as final downstream, so a swallowed error would
-lose the point. Photon itself never does this, its 200 bodies are always a
-FeatureCollection (empty for no match) and its errors are `message` on a
-non-200; the guard is for ChibiGeo's wrapper. The Photon-shaped provider is
-features-aware, so features are served when at least one of them is usable.
-AGENTS.md has the per-adapter detail.
+lose the point. Photon itself never does this: its handler always answers 200
+with a FeatureCollection, empty when nothing matches (`GenericSearchHandler` and
+`GeoJsonFormatter` in its source), and its errors are `{"message":...}` on a
+non-200. The guard is for ChibiGeo's wrapper, whose docs put errors on
+401/429/503/504 and never describe a 200 with an error. The Photon-shaped
+provider is features-aware, so features are served when at least one of them is
+usable. AGENTS.md has the per-adapter detail.
+
+Provider errors are built from the status, the Go type and an offset, never from
+the response text, so a credential or a coordinate a body smuggles into a decode
+failure cannot reach a log.
 
 One cost is easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance

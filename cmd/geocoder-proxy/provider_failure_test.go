@@ -121,6 +121,66 @@ func TestUnusableFeatureBodyIs503AndNotCached(t *testing.T) {
 	is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
 }
 
+// TestNonStringErrorIs503AndNotCached pins the cache consequence of a typed
+// error field: a 200 whose error is not a string is a 503 that is not cached,
+// with or without a usable feature in the body, so the point stays retryable.
+func TestNonStringErrorIs503AndNotCached(t *testing.T) {
+	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "false with no features", body: `{"error":false}`},
+		{name: "zero with no features", body: `{"error":0}`},
+		{name: "empty object with no features", body: `{"error":{}}`},
+		{name: "empty array with no features", body: `{"error":[]}`},
+		{name: "number with a usable feature", body: `{"error":42,"features":[` + feature + `]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			calls := &atomic.Int32{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(srv.Close)
+			c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))
+
+			first := doRequest(c.handler, t.Context())
+			second := doRequest(c.handler, t.Context())
+
+			must.Equal(http.StatusServiceUnavailable, first.Code)
+			must.Equal(http.StatusServiceUnavailable, second.Code, "a decode failure is not cached as an empty answer")
+			is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
+		})
+	}
+}
+
+// TestDecodeFailureLogsNoUpstreamText pins the PII and credential rule on the
+// decode path: a body crafted to smuggle a key and coordinates through an
+// osm_id type error must reach neither the log nor the caller.
+func TestDecodeFailureLogsNoUpstreamText(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"features":[{"type":"Feature","properties":{"name":"X","osm_id":"REALKEY123 lat=51.4774"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))
+
+	rec := doRequest(c.handler, t.Context())
+
+	must.Equal(http.StatusServiceUnavailable, rec.Code)
+	logs := c.logs.String()
+	is.Contains(logs, "decoding upstream response", "the decode failure is logged")
+	is.NotContains(logs, "REALKEY123", "a credential must never reach a log")
+	is.NotContains(logs, "51.4774", "a coordinate must never reach a log")
+	is.NotContains(rec.Body.String(), "REALKEY123")
+	is.NotContains(rec.Body.String(), "51.4774")
+}
+
 // TestOrdinaryFailureIsNotTerminal pins the negative direction: a failure that
 // is not a terminal response must not touch the terminal counter.
 func TestOrdinaryFailureIsNotTerminal(t *testing.T) {

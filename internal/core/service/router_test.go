@@ -387,7 +387,7 @@ func TestReverseFailures(t *testing.T) {
 func TestReverseTerminalCapCounted(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	cache, metrics := newFakeCache(), &fakeMetrics{}
-	terminal := reverseGeocoder("p1", nil, fmt.Errorf("upstream status 429: limit_exceeded (%w)", domain.ErrProviderTerminal))
+	terminal := reverseGeocoder("p1", nil, fmt.Errorf("upstream status 429 (%w)", domain.ErrProviderTerminal))
 	answer := reverseGeocoder("p2", []domain.Result{house(cellAnswer.Lat(), cellAnswer.Lon())}, nil)
 	r := newRouter(cache, metrics, Provider{Geocoder: terminal}, Provider{Geocoder: answer})
 

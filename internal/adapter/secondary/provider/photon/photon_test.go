@@ -143,7 +143,7 @@ func cappedUpstream(t *testing.T, body string, retryAfter string) (*httptest.Ser
 }
 
 // TestRetryPolicyByResponseBody pins which 429 bodies end the call: ChibiGeo's
-// cap codes are terminal (one request, then failover), while a plain rate limit
+// plan cap is terminal (one request, then failover), while a plain rate limit
 // or an unrecognised body takes the ordinary retry path.
 func TestRetryPolicyByResponseBody(t *testing.T) {
 	tests := []struct {
@@ -155,8 +155,8 @@ func TestRetryPolicyByResponseBody(t *testing.T) {
 		{name: "the documented plan cap is terminal", body: `{"error":"limit_exceeded"}`, wantCalls: 1, wantTerminal: true},
 		{name: "rate limited is retried", body: `{"error":"rate_limited"}`, wantCalls: 2},
 		{name: "unknown error code is retried", body: `{"error":"over_query_limit"}`, wantCalls: 2},
-		{name: "quota_exceeded is not this endpoint's error", body: `{"error":"quota_exceeded"}`, wantCalls: 2},
-		{name: "subscription_past_due is not this endpoint's error", body: `{"error":"subscription_past_due"}`, wantCalls: 2},
+		{name: "another product's quota code is retried", body: `{"error":"quota_exceeded"}`, wantCalls: 2},
+		{name: "another product's billing code is retried", body: `{"error":"subscription_past_due"}`, wantCalls: 2},
 		{name: "non-JSON error body is retried", body: `<html>slow down</html>`, wantCalls: 2},
 	}
 
@@ -292,9 +292,6 @@ func TestTerminalCapBodyTruncatedMidValue(t *testing.T) {
 	is.Equal(int32(3), calls.Load(), "and takes the ordinary retry path")
 }
 
-// TestErrorBodyOn200IsAnError covers the parity gap with the other three
-// providers: a 200 carrying an error must fail the lookup, never read as a
-// genuine empty answer, which is cached cell-wide and never retried downstream.
 // TestErrorBodyOn200IsAnError pins the failure side of the result-count gate: a
 // string error with no usable result fails, with a generic message that echoes
 // no upstream text.
@@ -329,20 +326,36 @@ func TestErrorBodyOn200IsAnError(t *testing.T) {
 	}
 }
 
-// TestNonStringErrorFieldFailsDecode pins the trade-off of a typed error field:
-// a 200 whose error is not a string fails at the decode rather than being
-// served. It fails either way and caches nothing; only the message differs.
+// TestNonStringErrorFieldFailsDecode pins the consequence of a typed error
+// field: a 200 whose error is not a string fails the lookup caches nothing,
+// whether or not the body also carries a usable feature. It keeps the point
+// retryable rather than settling it as a genuine empty or serving it.
 func TestNonStringErrorFieldFailsDecode(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"error":42,"features":[{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}]}`))
-	}))
-	defer srv.Close()
+	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "false with no features", body: `{"error":false}`},
+		{name: "zero with no features", body: `{"error":0}`},
+		{name: "empty object with no features", body: `{"error":{}}`},
+		{name: "empty array with no features", body: `{"error":[]}`},
+		{name: "number with a usable feature", body: `{"error":42,"features":[` + feature + `]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
 
-	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
-	must.Error(err)
-	is.Nil(got)
+			got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Nil(got)
+		})
+	}
 }
 
 // TestStringErrorWithFeaturesIsServed pins the one case the features-aware rule
@@ -377,7 +390,7 @@ func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
 	is.Nil(got)
 }
 
-// TestCapBodyOnNon429IsRetried pins the status gate: a cap code only ends the
+// TestCapBodyOnNon429IsRetried pins the status gate: the plan cap only ends the
 // call on a 429, so a 5xx carrying the same body keeps its retries.
 func TestCapBodyOnNon429IsRetried(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
