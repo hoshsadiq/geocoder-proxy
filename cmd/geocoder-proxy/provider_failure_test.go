@@ -13,8 +13,7 @@ import (
 	"github.com/hoshsadiq/geocoder-proxy/internal/platform/config"
 )
 
-// cappedUpstream answers every request with a 429 carrying body and counts
-// them, so a test can see how many times the router asked a capped provider.
+// cappedUpstream answers every request with a 429 carrying body.
 func cappedUpstream(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	calls := &atomic.Int32{}
@@ -44,9 +43,6 @@ func terminalCount(t *testing.T, reg *prom.Registry) int {
 	return total
 }
 
-// TestTerminalCapFailsOverImmediately covers the incident: a provider at its
-// plan cap answers 429 {"error":"limit_exceeded"}, is asked once, and the next
-// provider answers, instead of being retried twice first.
 func TestTerminalCapFailsOverImmediately(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	capped, calls := cappedUpstream(t, `{"error":"limit_exceeded"}`)
@@ -62,9 +58,6 @@ func TestTerminalCapFailsOverImmediately(t *testing.T) {
 	is.Equal(1, terminalCount(t, c.reg), "the terminal cap is visible apart from the provider error outcome")
 }
 
-// TestAllProvidersTerminalCapIs503 covers the never-blank rule: every provider
-// at its cap is an error, so the caller gets a JSON 503, never an empty 200 and
-// never 502.
 func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	first, firstCalls := cappedUpstream(t, `{"error":"limit_exceeded"}`)
@@ -121,9 +114,6 @@ func TestUnusableFeatureBodyIs503AndNotCached(t *testing.T) {
 	is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
 }
 
-// TestNonStringErrorIs503AndNotCached pins the cache consequence of a typed
-// error field: a 200 whose error is not a string is a 503 that is not cached,
-// with or without a usable feature in the body, so the point stays retryable.
 func TestNonStringErrorIs503AndNotCached(t *testing.T) {
 	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
 	tests := []struct {
@@ -158,9 +148,27 @@ func TestNonStringErrorIs503AndNotCached(t *testing.T) {
 	}
 }
 
-// TestDecodeFailureLogsNoUpstreamText pins the PII and credential rule on the
-// decode path: a body crafted to smuggle a key and coordinates through an
-// osm_id type error must reach neither the log nor the caller.
+// TestDecodeFailureLogsNoUpstreamText pins the PII rule on the decode path.
+// TestTerminalCapIs503AndNotCached pins that a terminal cap is neither cached
+// nor echoed: the cap body carries a key and coordinates, and the WARN line
+// names our own code only.
+func TestTerminalCapIs503AndNotCached(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv, calls := cappedUpstream(t, `{"error":"limit_exceeded","debug":"REALKEY123 lat=51.4774"}`)
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))
+
+	first := doRequest(c.handler, t.Context())
+	second := doRequest(c.handler, t.Context())
+
+	must.Equal(http.StatusServiceUnavailable, first.Code)
+	must.Equal(http.StatusServiceUnavailable, second.Code, "a terminal cap is not cached")
+	is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
+	logs := c.logs.String()
+	is.Contains(logs, "terminal provider failure): limit_exceeded")
+	is.NotContains(logs, "REALKEY123", "a credential must never reach a log")
+	is.NotContains(logs, "51.4774", "a coordinate must never reach a log")
+}
+
 func TestDecodeFailureLogsNoUpstreamText(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -181,8 +189,6 @@ func TestDecodeFailureLogsNoUpstreamText(t *testing.T) {
 	is.NotContains(rec.Body.String(), "51.4774")
 }
 
-// TestOrdinaryFailureIsNotTerminal pins the negative direction: a failure that
-// is not a terminal response must not touch the terminal counter.
 func TestOrdinaryFailureIsNotTerminal(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	first, _ := cappedUpstream(t, `{"error":"rate_limited"}`)

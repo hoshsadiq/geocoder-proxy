@@ -143,30 +143,30 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
-// terminalCapCode is ChibiGeo's documented plan cap, the only geocoding error
-// its docs say waiting cannot clear ("retrying after a second does not reset
-// that quota"). The endpoint's other errors are the two 401s
-// (missing_api_key, invalid_api_key), 429 rate_limited, 503 service_unavailable
-// and 504 gateway_timeout; none is terminal.
+// terminalCapCode is ChibiGeo's documented plan cap: the only geocoding error
+// its docs say waiting cannot clear.
 const terminalCapCode = "limit_exceeded"
 
-// isTerminalCap classifies a non-200 response. Only a 429 carrying the plan cap
-// is terminal; everything else, including an unrecognised body and any other
-// status, takes the ordinary retry path. httpfetch caps how much of the body it
-// offers, so the first JSON value is decoded rather than the whole buffer
-// unmarshalled: trailing bytes past the value do not matter, and a value the cap
-// cuts in half fails to decode and falls back to retrying.
-func isTerminalCap(statusCode int, body []byte) bool {
-	if statusCode != http.StatusTooManyRequests {
-		return false
+// terminalCapCheck reports whether a non-200 response is that cap on a 429, and
+// records the code that matched so the error can name it. The first JSON value
+// is decoded, so trailing bytes past it do not matter.
+func terminalCapCheck(matched *string) httpfetch.TerminalCheck {
+	return func(statusCode int, body []byte) bool {
+		if statusCode != http.StatusTooManyRequests {
+			return false
+		}
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
+			return false
+		}
+		if errBody.Error != terminalCapCode {
+			return false
+		}
+		*matched = terminalCapCode
+		return true
 	}
-	var errBody struct {
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
-		return false
-	}
-	return errBody.Error == terminalCapCode
 }
 
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
@@ -175,13 +175,13 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 		headers["X-Api-Key"] = c.apiKey
 	}
 	var fc featureCollection
+	// matched names the code the check recognised; it is one of our own
+	// constants, never response text.
+	var matched string
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, isTerminalCap); err != nil {
-		if errors.Is(err, domain.ErrProviderTerminal) {
-			// Name the code this adapter matched. It is one of our own
-			// literals, never response text, so the log stays diagnosable
-			// without echoing a body.
-			return nil, fmt.Errorf("%w: %s", err, terminalCapCode)
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalCapCheck(&matched)); err != nil {
+		if matched != "" {
+			return nil, fmt.Errorf("%w: %s", err, matched)
 		}
 		return nil, err
 	}
@@ -191,19 +191,15 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 			results = append(results, r)
 		}
 	}
-	// A 200 that carries an error and yields no usable result is a failure, not
-	// a cached empty. This guards ChibiGeo's wrapper, not Photon: Photon answers
-	// 200 with a FeatureCollection (empty for no match) and puts errors in
-	// `message` on a non-200.
+	// Guards ChibiGeo's wrapper, not Photon: Photon answers 200 with a
+	// FeatureCollection and puts errors in `message` on a non-200.
 	if fc.Error != nil && *fc.Error != "" && len(results) == 0 {
 		return nil, errors.New("upstream returned an error response")
 	}
 	return results, nil
 }
 
-// featureCollection is the Photon wire shape. The API documents error as a
-// string, so a non-string value is a decode failure rather than a silent
-// no-match.
+// featureCollection is the Photon wire shape.
 type featureCollection struct {
 	Features []feature `json:"features"`
 	Error    *string   `json:"error"`

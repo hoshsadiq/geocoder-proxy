@@ -142,9 +142,7 @@ func cappedUpstream(t *testing.T, body string, retryAfter string) (*httptest.Ser
 	return srv, calls
 }
 
-// TestRetryPolicyByResponseBody pins which 429 bodies end the call: ChibiGeo's
-// plan cap is terminal (one request, then failover), while a plain rate limit
-// or an unrecognised body takes the ordinary retry path.
+// TestRetryPolicyByResponseBody pins which 429 bodies end the call.
 func TestRetryPolicyByResponseBody(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -172,8 +170,6 @@ func TestRetryPolicyByResponseBody(t *testing.T) {
 			} else {
 				must.Error(err)
 				is.Equal("upstream status 429 (terminal provider failure): limit_exceeded", err.Error())
-				is.NotContains(err.Error(), "51.4774", "provider errors never carry coordinates")
-				is.NotContains(err.Error(), srv.URL, "provider errors never carry the request URL")
 			}
 			is.Equal(tt.wantCalls, calls.Load(), "upstream requests for this provider")
 		})
@@ -195,9 +191,7 @@ func alwaysCapped(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
 	return srv, calls
 }
 
-// TestTerminalCapBodyLongerThanThePrefix pins that classification survives the
-// httpfetch body cap (4KiB): the first JSON value is decoded, so trailing bytes
-// past it do not matter. Each body must still make exactly one request.
+// TestTerminalCapBodyLongerThanThePrefix pins the boundary at the httpfetch cap.
 func TestTerminalCapBodyLongerThanThePrefix(t *testing.T) {
 	capBytes := httpfetch.MaxErrorBodyBytes
 	base := `{"error":"limit_exceeded"}`
@@ -225,8 +219,6 @@ func TestTerminalCapBodyLongerThanThePrefix(t *testing.T) {
 	}
 }
 
-// TestTerminalCapBodyGzipped pins that a compressed response is decoded before
-// classification, not treated as opaque bytes.
 func TestTerminalCapBodyGzipped(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	var gz bytes.Buffer
@@ -251,8 +243,6 @@ func TestTerminalCapBodyGzipped(t *testing.T) {
 	is.Equal(int32(1), calls.Load())
 }
 
-// TestTerminalCapBodyChunked pins that a chunked response (no Content-Length)
-// is read to EOF and handled like a fixed-length one.
 func TestTerminalCapBodyChunked(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	calls := &atomic.Int32{}
@@ -277,9 +267,8 @@ func TestTerminalCapBodyChunked(t *testing.T) {
 	is.Equal(int32(1), calls.Load())
 }
 
-// TestTerminalCapBodyTruncatedMidValue pins the documented fallback: a single
-// JSON value longer than the prefix is cut in half, fails to decode, and takes
-// the ordinary retry path with no code echoed.
+// TestTerminalCapBodyTruncatedMidValue pins the fallback when the cap cuts the
+// JSON value in half: the ordinary retry path.
 func TestTerminalCapBodyTruncatedMidValue(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	body := `{"error":"limit_exceeded","pad":"` + strings.Repeat("a", httpfetch.MaxErrorBodyBytes) + `"}`
@@ -292,9 +281,7 @@ func TestTerminalCapBodyTruncatedMidValue(t *testing.T) {
 	is.Equal(int32(3), calls.Load(), "and takes the ordinary retry path")
 }
 
-// TestErrorBodyOn200IsAnError pins the failure side of the result-count gate: a
-// string error with no usable result fails, with a generic message that echoes
-// no upstream text.
+// TestErrorBodyOn200IsAnError pins the failure side of the result-count gate.
 func TestErrorBodyOn200IsAnError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -319,18 +306,14 @@ func TestErrorBodyOn200IsAnError(t *testing.T) {
 			must.Error(err)
 			is.Nil(got)
 			is.Equal("upstream returned an error response", err.Error())
-			is.NotContains(err.Error(), "51.4774")
-			is.NotContains(err.Error(), "SUPERSECRET")
 			is.Equal(int32(1), calls.Load(), "a 200 is not retried")
 		})
 	}
 }
 
-// TestNonStringErrorFieldFailsDecode pins the consequence of a typed error
-// field: a 200 whose error is not a string fails the lookup caches nothing,
-// whether or not the body also carries a usable feature. It keeps the point
-// retryable rather than settling it as a genuine empty or serving it.
-func TestNonStringErrorFieldFailsDecode(t *testing.T) {
+// TestNonStringErrorFieldIsAFailure pins that a non-string error fails the
+// lookup, with or without a usable feature.
+func TestNonStringErrorFieldIsAFailure(t *testing.T) {
 	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
 	tests := []struct {
 		name string
@@ -358,9 +341,6 @@ func TestNonStringErrorFieldFailsDecode(t *testing.T) {
 	}
 }
 
-// TestEmptyErrorStringIsAGenuineEmpty pins the tolerated empty value: an error
-// field that is an empty string is not an error, so a body with no features
-// settles as a genuine empty rather than a 503.
 func TestEmptyErrorStringIsAGenuineEmpty(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -374,9 +354,6 @@ func TestEmptyErrorStringIsAGenuineEmpty(t *testing.T) {
 	is.Empty(got)
 }
 
-// TestStringErrorWithFeaturesIsServed pins the one case the features-aware rule
-// exists for: a body that carries an error string and a usable feature is
-// served, not turned into a 503.
 func TestStringErrorWithFeaturesIsServed(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -391,8 +368,8 @@ func TestStringErrorWithFeaturesIsServed(t *testing.T) {
 	is.Equal("Good", got[0].Address.Name)
 }
 
-// TestErrorWithUnusableFeaturesIsAFailure pins the result-count gate: a feature
-// the mapping drops leaves no usable result, so a set error fails the lookup.
+// TestErrorWithUnusableFeaturesIsAFailure pins that a dropped feature leaves no
+// usable result, so a set error fails the lookup.
 func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -406,8 +383,7 @@ func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
 	is.Nil(got)
 }
 
-// TestCapBodyOnNon429IsRetried pins the status gate: the plan cap only ends the
-// call on a 429, so a 5xx carrying the same body keeps its retries.
+// TestCapBodyOnNon429IsRetried pins the status gate: only a 429 is classified.
 func TestCapBodyOnNon429IsRetried(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	var calls atomic.Int32
@@ -427,8 +403,7 @@ func TestCapBodyOnNon429IsRetried(t *testing.T) {
 	is.Equal(int32(3), calls.Load(), "a 5xx keeps its retries")
 }
 
-// TestRateLimitedRetryAfterHonoured pins that a non-terminal 429 still waits
-// the provider's Retry-After before the retry.
+// TestRateLimitedRetryAfterHonoured pins that a non-terminal 429 waits Retry-After.
 func TestRateLimitedRetryAfterHonoured(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv, calls := cappedUpstream(t, `{"error":"rate_limited"}`, "1")

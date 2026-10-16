@@ -69,9 +69,11 @@ non-200. The guard is for ChibiGeo's wrapper, whose docs put errors on
 provider is features-aware, so features are served when at least one of them is
 usable. AGENTS.md has the per-adapter detail.
 
-Provider errors are built from the status, the Go type and an offset, never from
-the response text, so a credential or a coordinate a body smuggles into a decode
-failure cannot reach a log.
+Provider errors on the terminal path and in the shared HTTP layer's decode are
+built from the status, the Go type and an offset, never from the response text,
+so a credential or a coordinate a body smuggles into one cannot reach a log. The
+other three adapters still echo their own upstream error text; AGENTS.md records
+that gap.
 
 One cost is easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance

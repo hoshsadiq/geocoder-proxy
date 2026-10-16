@@ -72,8 +72,8 @@ func TestMetrics(t *testing.T) {
 	m.QuotaRemaining("chibigeo", 42)
 	is.InDelta(42, testutil.ToFloat64(m.quotaRemaining.WithLabelValues("chibigeo")), 0.0001)
 
-	// A terminal cap is its own family, separate from the five provider
-	// outcomes existing dashboards and alerts key on.
+	// Its own family, not a new provider outcome: the five outcomes and their
+	// labels are what dashboards and alerts key on.
 	m.ProviderTerminal("chibigeo")
 	is.InDelta(1, testutil.ToFloat64(m.providerTerminal.WithLabelValues("chibigeo")), 0.0001)
 	is.Equal(1, testutil.CollectAndCount(m.providerTerminal, "geocoder_provider_terminal_total"))

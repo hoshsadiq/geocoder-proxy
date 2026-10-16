@@ -95,11 +95,10 @@ func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
 	is.Less(time.Since(start), time.Second, "a terminal response ignores Retry-After and returns at once")
 }
 
-// TestTerminalCheckBodyIsCapped pins the prefix size against the constant, so a
-// boundary test elsewhere cannot silently stop testing it.
+// TestTerminalCheckBodyIsCapped pins the prefix against the constant.
 func TestTerminalCheckBodyIsCapped(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
-	is.Equal(4096, MaxErrorBodyBytes, "the docs name 4KiB; changing the cap is a deliberate act")
+	is.Equal(4096, MaxErrorBodyBytes, "changing the cap is a deliberate act")
 	var gotLen atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -116,9 +115,8 @@ func TestTerminalCheckBodyIsCapped(t *testing.T) {
 	is.Equal(int32(MaxErrorBodyBytes), gotLen.Load())
 }
 
-// TestDecodeErrorNamesGoTypeNotBodyText pins the decode message: it names the
-// Go type and offset, never the offending value, which can carry a credential
-// or a coordinate.
+// TestDecodeErrorNamesGoTypeNotBodyText pins that the decode message carries
+// the Go type, never the offending value.
 func TestDecodeErrorNamesGoTypeNotBodyText(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -348,20 +346,4 @@ func TestContextDeadlinePropagates(t *testing.T) {
 	err := Do(ctx, NewClient(time.Second), srv.URL, nil, &out, nil)
 	must.Error(err)
 	must.ErrorIs(err, context.DeadlineExceeded)
-}
-
-func TestDecodeErrorCarriesNoBody(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`<html>SECRET ERROR PAGE WITH 51.4774</html>`))
-	}))
-	defer srv.Close()
-
-	var out struct{}
-	err := Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out, nil)
-	must.Error(err)
-	must.ErrorContains(err, "decoding upstream response")
-	is.NotContains(err.Error(), "SECRET")
-	is.NotContains(err.Error(), "51.4774")
-	is.NotContains(err.Error(), "<html>")
 }

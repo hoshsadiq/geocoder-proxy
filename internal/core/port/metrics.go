@@ -71,6 +71,6 @@ type Metrics interface {
 	QuotaRemaining(provider string, remaining int)
 
 	// ProviderTerminal records one terminal provider response (see
-	// domain.ErrProviderTerminal); it is a sub-count of a provider error.
+	// domain.ErrProviderTerminal); a sub-count of a provider error.
 	ProviderTerminal(provider string)
 }

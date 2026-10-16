@@ -24,9 +24,7 @@ import (
 // the cap exists so a misbehaving upstream cannot exhaust memory.
 const maxBodyBytes = 16 << 20
 
-// MaxErrorBodyBytes caps the body prefix offered to a TerminalCheck. A
-// provider's error code sits in a small JSON document, and a large error page
-// must not be buffered.
+// MaxErrorBodyBytes caps the body prefix offered to a TerminalCheck.
 const MaxErrorBodyBytes = 4 << 10
 
 // Redirect policy failures are deterministic: looping or cross-host
@@ -62,22 +60,16 @@ func NewClient(timeout time.Duration) *http.Client {
 const maxRetries = 2
 
 // TerminalCheck reports whether a non-200 response is a terminal provider
-// failure (domain.ErrProviderTerminal), one that will not clear by retrying.
-// Nothing in this package echoes upstream text: the terminal and decode errors
-// are built from the status, the Go type and an offset.
-// Such a response ends the call at once so the router fails over, instead of
-// spending the provider's remaining allowance on retries that cannot succeed.
-// body is a prefix of the response, at most MaxErrorBodyBytes long. The check
-// gets a private copy of that prefix, so keeping it is harmless, but the
-// response stream is not available again. Provider packages own their upstream's
-// vocabulary and pass their check to Do; a nil check retries every transient
-// status.
+// failure (domain.ErrProviderTerminal), one that will not clear by retrying, so
+// the call ends at once and the router fails over instead of spending the
+// provider's remaining allowance on hopeless retries. body is at most
+// MaxErrorBodyBytes of the response; the response stream is not readable again
+// afterwards. A nil check retries every transient status.
 type TerminalCheck func(statusCode int, body []byte) bool
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
 // transient failures (transport errors, 5xx, 429) with bounded backoff. A
-// non-200 response the check reports as terminal is returned at once, without a
-// retry. A non-200 status is an error carrying only the status code. Response
+// non-200 status the check reports as terminal is returned at once. Response
 // bodies are drained and closed on every path.
 func Do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any, terminal TerminalCheck) error {
 	return do(ctx, client, rawURL, headers, out, terminal, 0)
@@ -138,10 +130,9 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 	return nil
 }
 
-// decodeError describes a decode failure without echoing the body. The stdlib
+// decodeError describes a decode failure without echoing the body: the stdlib
 // error renders the offending value, which can carry a credential or a
-// coordinate and is bounded only by the body cap, so only the Go type and
-// offset survive; the JSON kind is not included either.
+// coordinate.
 func decodeError(err error) error {
 	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 		return fmt.Errorf("decoding upstream response: cannot unmarshal into %s at offset %d", typeErr.Type, typeErr.Offset)
@@ -162,9 +153,8 @@ func retryableTransport(ctx context.Context, err error) bool {
 	return !errors.Is(err, errTooManyRedirects) && !errors.Is(err, errCrossHostRedirect)
 }
 
-// classifyTerminal asks the provider's check about a non-200 response, reading
-// at most MaxErrorBodyBytes so a huge error page is never buffered. A nil check
-// or a read failure is "not terminal", which keeps the retry path.
+// classifyTerminal reads at most MaxErrorBodyBytes so a huge error page is
+// never buffered. A nil check or a read failure keeps the retry path.
 func classifyTerminal(check TerminalCheck, resp *http.Response) bool {
 	if check == nil {
 		return false

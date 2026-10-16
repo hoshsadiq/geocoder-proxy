@@ -24,9 +24,7 @@ var (
 	ErrInvalidQuery = errors.New("invalid query")
 
 	// ErrProviderTerminal marks a provider response that will not clear by
-	// retrying: a plan cap, an exhausted allowance, a suspended subscription.
-	// It is still a provider error, so the never-blank rule holds; the router
-	// counts it separately (geocoder_provider_terminal_total) so the terminal
-	// path is measurable apart from an ordinary failure.
+	// retrying. It is still a provider error, and it is counted separately as
+	// geocoder_provider_terminal_total.
 	ErrProviderTerminal = errors.New("terminal provider failure")
 )
