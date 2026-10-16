@@ -175,8 +175,6 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 		headers["X-Api-Key"] = c.apiKey
 	}
 	var fc featureCollection
-	// matched names the code the check recognised; it is one of our own
-	// constants, never response text.
 	var matched string
 	// The router prefixes provider errors with the provider name.
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalCapCheck(&matched)); err != nil {
