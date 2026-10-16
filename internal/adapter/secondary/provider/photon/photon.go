@@ -150,13 +150,13 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 // and 504 gateway_timeout; none is terminal.
 const terminalCapCode = "limit_exceeded"
 
-// terminalResponse classifies a non-200 response. Only a 429 carrying the plan
-// cap is terminal; everything else, including an unrecognised body and any
-// other status, takes the ordinary retry path. httpfetch caps how much of the
-// body it offers, so the first JSON value is decoded rather than the whole
-// buffer unmarshalled: trailing bytes past the value do not matter, and a value
-// the cap cuts in half fails to decode and falls back to retrying.
-func terminalResponse(statusCode int, body []byte) bool {
+// isTerminalCap classifies a non-200 response. Only a 429 carrying the plan cap
+// is terminal; everything else, including an unrecognised body and any other
+// status, takes the ordinary retry path. httpfetch caps how much of the body it
+// offers, so the first JSON value is decoded rather than the whole buffer
+// unmarshalled: trailing bytes past the value do not matter, and a value the cap
+// cuts in half fails to decode and falls back to retrying.
+func isTerminalCap(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests {
 		return false
 	}
@@ -176,7 +176,13 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	}
 	var fc featureCollection
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, isTerminalCap); err != nil {
+		if errors.Is(err, domain.ErrProviderTerminal) {
+			// Name the code this adapter matched. It is one of our own
+			// literals, never response text, so the log stays diagnosable
+			// without echoing a body.
+			return nil, fmt.Errorf("%w: %s", err, terminalCapCode)
+		}
 		return nil, err
 	}
 	results := make([]domain.Result, 0, len(fc.Features))

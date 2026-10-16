@@ -171,7 +171,7 @@ func TestRetryPolicyByResponseBody(t *testing.T) {
 				must.NoError(err, "a non-terminal 429 is retried and the second attempt succeeds")
 			} else {
 				must.Error(err)
-				is.Equal("upstream status 429 (terminal provider failure)", err.Error())
+				is.Equal("upstream status 429 (terminal provider failure): limit_exceeded", err.Error())
 				is.NotContains(err.Error(), "51.4774", "provider errors never carry coordinates")
 				is.NotContains(err.Error(), srv.URL, "provider errors never carry the request URL")
 			}
@@ -356,6 +356,22 @@ func TestNonStringErrorFieldFailsDecode(t *testing.T) {
 			is.Nil(got)
 		})
 	}
+}
+
+// TestEmptyErrorStringIsAGenuineEmpty pins the tolerated empty value: an error
+// field that is an empty string is not an error, so a body with no features
+// settles as a genuine empty rather than a 503.
+func TestEmptyErrorStringIsAGenuineEmpty(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"","features":[]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+	is.Empty(got)
 }
 
 // TestStringErrorWithFeaturesIsServed pins the one case the features-aware rule

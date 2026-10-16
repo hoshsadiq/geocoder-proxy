@@ -88,7 +88,7 @@ func TestErrorBodyOn200Is503AndNotCached(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"error":{"code":"limit_exceeded"}}`))
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
 	}))
 	t.Cleanup(srv.Close)
 	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))

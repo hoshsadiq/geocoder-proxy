@@ -26,7 +26,7 @@ const maxBodyBytes = 16 << 20
 
 // MaxErrorBodyBytes caps the body prefix offered to a TerminalCheck. A
 // provider's error code sits in a small JSON document, and a large error page
-// must not be buffered or quoted.
+// must not be buffered.
 const MaxErrorBodyBytes = 4 << 10
 
 // Redirect policy failures are deterministic: looping or cross-host

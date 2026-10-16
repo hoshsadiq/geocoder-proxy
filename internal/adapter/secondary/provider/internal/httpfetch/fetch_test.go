@@ -3,6 +3,7 @@ package httpfetch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -113,6 +114,26 @@ func TestTerminalCheckBodyIsCapped(t *testing.T) {
 	var out struct{}
 	must.Error(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check))
 	is.Equal(int32(MaxErrorBodyBytes), gotLen.Load())
+}
+
+// TestDecodeErrorNamesGoTypeNotBodyText pins the decode message: it names the
+// Go type and offset, never the offending value, which can carry a credential
+// or a coordinate.
+func TestDecodeErrorNamesGoTypeNotBodyText(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"osm_id":"lat=51.4774&key=sk-live-DEADBEEF"}`))
+	}))
+	defer srv.Close()
+
+	var out struct {
+		OsmID json.Number `json:"osm_id"`
+	}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil)
+	must.Error(err)
+	is.Contains(err.Error(), "json.Number", "the message names the Go type")
+	is.NotContains(err.Error(), "51.4774")
+	is.NotContains(err.Error(), "DEADBEEF")
 }
 
 func TestNonTerminalCheckKeepsRetrying(t *testing.T) {
