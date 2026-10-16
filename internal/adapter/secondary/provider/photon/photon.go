@@ -147,26 +147,19 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 // its docs say waiting cannot clear.
 const terminalCapCode = "limit_exceeded"
 
-// terminalCapCheck reports whether a non-200 response is that cap on a 429, and
-// records the code that matched so the error can name it. The first JSON value
-// is decoded, so trailing bytes past it do not matter.
-func terminalCapCheck(matched *string) httpfetch.TerminalCheck {
-	return func(statusCode int, body []byte) bool {
-		if statusCode != http.StatusTooManyRequests {
-			return false
-		}
-		var errBody struct {
-			Error string `json:"error"`
-		}
-		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
-			return false
-		}
-		if errBody.Error != terminalCapCode {
-			return false
-		}
-		*matched = terminalCapCode
-		return true
+// isTerminalCap reports whether a non-200 response is that cap on a 429. The
+// first JSON value is decoded, so trailing bytes past it do not matter.
+func isTerminalCap(statusCode int, body []byte) bool {
+	if statusCode != http.StatusTooManyRequests {
+		return false
 	}
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
+		return false
+	}
+	return errBody.Error == terminalCapCode
 }
 
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
@@ -175,11 +168,10 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 		headers["X-Api-Key"] = c.apiKey
 	}
 	var fc featureCollection
-	var matched string
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalCapCheck(&matched)); err != nil {
-		if matched != "" {
-			return nil, fmt.Errorf("%w: %s", err, matched)
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, isTerminalCap); err != nil {
+		if errors.Is(err, domain.ErrProviderTerminal) {
+			return nil, fmt.Errorf("%w: %s", err, terminalCapCode)
 		}
 		return nil, err
 	}
