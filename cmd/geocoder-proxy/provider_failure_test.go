@@ -106,6 +106,28 @@ func TestErrorBodyOn200Is503AndNotCached(t *testing.T) {
 	is.Equal(0, terminalCount(t, c.reg), "a 200 error is an ordinary error, not a 429 terminal cap")
 }
 
+// TestUnusableFeatureBodyIs503AndNotCached pins the unusable-features case end
+// to end: a 200 carrying an error whose only feature the mapping drops is a 503
+// that is not cached, so the next request asks upstream again.
+func TestUnusableFeatureBodyIs503AndNotCached(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded","features":[{"type":"Feature","properties":{"name":"Bad"},"geometry":{"type":"Point","coordinates":[999,999]}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))
+
+	first := doRequest(c.handler, t.Context())
+	second := doRequest(c.handler, t.Context())
+
+	must.Equal(http.StatusServiceUnavailable, first.Code)
+	must.Equal(http.StatusServiceUnavailable, second.Code, "an unusable feature is not cached as an empty answer")
+	is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
+}
+
 // TestOrdinaryFailureIsNotTerminal pins the negative direction: a failure that
 // is not a terminal response must not touch the terminal counter.
 func TestOrdinaryFailureIsNotTerminal(t *testing.T) {

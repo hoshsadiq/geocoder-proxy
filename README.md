@@ -59,8 +59,7 @@ has it, whatever upstream it points at.
 A 200 whose body carries an `error` is a failure, not an empty answer: an empty
 answer is cached and treated as final downstream, so a swallowed error would
 lose the point. AGENTS.md has the per-adapter detail; the Photon-shaped provider
-is features-aware, so a body that still carries features is served whatever the
-error value.
+is features-aware, so features are served when at least one of them is usable.
 
 One cost is easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance

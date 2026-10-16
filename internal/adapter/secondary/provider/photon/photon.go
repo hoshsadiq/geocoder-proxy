@@ -193,17 +193,17 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 			results = append(results, r)
 		}
 	}
-	// A 200 that carries an error and yields no usable result is a failure,
-	// not an empty answer: an empty answer is cached and treated as final
-	// downstream, so a swallowed error would lose the point. The gate is the
-	// mapped result count, so a feature the mapping drops (bad or missing
-	// geometry) does not settle the lookup as a genuine empty. A usable result
-	// wins over the error field.
-	if msg, set := errorValue(fc.Error); set && len(results) == 0 {
-		if msg != "" && httpfetch.SafeCode(msg) {
-			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
+	// A 200 whose error is set and yields no usable result is a failure, not a
+	// cached empty. The length check comes first: parsing the error value can
+	// allocate on a large unusable error field, and a response that yields a
+	// result never needs to.
+	if len(results) == 0 {
+		if msg, set := errorValue(fc.Error); set {
+			if msg != "" && httpfetch.SafeCode(msg) {
+				return nil, fmt.Errorf("upstream returned an error response: %s", msg)
+			}
+			return nil, errors.New("upstream returned an error response")
 		}
-		return nil, errors.New("upstream returned an error response")
 	}
 	return results, nil
 }
@@ -224,16 +224,26 @@ type featureCollection struct {
 func errorValue(raw json.RawMessage) (msg string, set bool) {
 	trimmed := bytes.TrimSpace(raw)
 	switch string(trimmed) {
-	case "", "null", "false", "{}", "[]":
+	case "", "null", "false":
 		return "", false
 	}
 	var v any
 	if json.Unmarshal(trimmed, &v) == nil {
-		if f, ok := v.(float64); ok && f == 0 {
-			return "", false
-		}
-		if s, ok := v.(string); ok {
-			return s, s != ""
+		switch val := v.(type) {
+		case float64:
+			if val == 0 {
+				return "", false
+			}
+		case string:
+			return val, val != ""
+		case []any:
+			if len(val) == 0 {
+				return "", false
+			}
+		case map[string]any:
+			if len(val) == 0 {
+				return "", false
+			}
 		}
 	}
 	return "", true

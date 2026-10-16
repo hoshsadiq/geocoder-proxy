@@ -336,8 +336,8 @@ func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 		name   string
 		rawErr string
 	}{
-		{name: "object", rawErr: `{"code":"limit_exceeded"}`},
-		{name: "array", rawErr: `["limit_exceeded"]`},
+		{name: "non-empty object", rawErr: `{"code":"limit_exceeded"}`},
+		{name: "non-empty array", rawErr: `["limit_exceeded"]`},
 		{name: "number", rawErr: `7`},
 		{name: "true", rawErr: `true`},
 		{name: "number past float64", rawErr: `1e999`},
@@ -375,6 +375,8 @@ func TestEmptyErrorFieldIsAGenuineEmpty(t *testing.T) {
 		{name: "empty string", rawErr: `""`},
 		{name: "empty object", rawErr: `{}`},
 		{name: "empty array", rawErr: `[]`},
+		{name: "empty object with whitespace", rawErr: `{ }`},
+		{name: "empty array with whitespace", rawErr: `[ ]`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
