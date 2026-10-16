@@ -176,6 +176,27 @@ func TestRetryPolicyByResponseBody(t *testing.T) {
 	}
 }
 
+// TestCapBodyOnNon429IsRetried pins the status gate: a cap code only ends the
+// call on a 429, so a 5xx carrying the same body keeps its retries.
+func TestCapBodyOnNon429IsRetried(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+
+	must.Error(err)
+	is.Equal("upstream status 503", err.Error(), "the cap code is not reported for a non-429")
+	is.Equal(int32(3), calls.Load(), "a 5xx keeps its retries")
+}
+
 // TestRateLimitedRetryAfterHonoured pins that a non-terminal 429 still waits
 // the provider's Retry-After before the retry.
 func TestRateLimitedRetryAfterHonoured(t *testing.T) {

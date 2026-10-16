@@ -46,9 +46,9 @@ becomes a failover rather than a parked caller.
 ChibiGeo is the exception. When it answers 429 with `limit_exceeded`,
 `quota_exceeded` or `subscription_past_due`, waiting will not clear it, so the
 proxy does not retry: the provider is asked once and the lookup moves to the
-next one. That stops a provider at its plan cap from spending its remaining
-allowance on retries that cannot succeed. A 429 the proxy does not recognise is
-treated as transient, exactly as before.
+next one, if there is one. That spares the lookup two retries and roughly a
+second and a half of backoff that cannot help it. A 429 the proxy does not
+recognise is treated as transient, exactly as before.
 
 ## What it does
 

@@ -73,6 +73,32 @@ func TestTerminalResponseNotRetried(t *testing.T) {
 	is.Equal(int32(1), calls.Load(), "a terminal response is not retried")
 }
 
+func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
+	}))
+	defer srv.Close()
+
+	check := func(statusCode int, body []byte) (string, bool) {
+		if statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}` {
+			return "limit_exceeded", true
+		}
+		return "", false
+	}
+
+	var out struct{}
+	start := time.Now()
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
+	must.Error(err)
+	is.Equal(int32(1), calls.Load())
+	is.Less(time.Since(start), time.Second, "a terminal response ignores Retry-After and returns at once")
+}
+
 func TestNonTerminalCheckKeepsRetrying(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	var calls atomic.Int32

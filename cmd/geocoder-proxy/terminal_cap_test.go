@@ -57,7 +57,7 @@ func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	rec := doRequest(c.handler, t.Context())
 
 	must.Equal(http.StatusServiceUnavailable, rec.Code)
-	is.NotContains(rec.Body.String(), "51.4774", "error bodies never carry coordinates")
+	is.JSONEq(`{"error":"geocoding temporarily unavailable"}`, rec.Body.String(), "a fixed JSON error body, never the provider's text")
 	is.Equal(int32(1), firstCalls.Load())
 	is.Equal(int32(1), secondCalls.Load())
 	is.Equal(2, providerErrorCount(t, c.reg), "each capped provider is one error, no retries")
