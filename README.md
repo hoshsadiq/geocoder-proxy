@@ -47,7 +47,9 @@ half leaves no room to retry and the lookup fails over instead.
 A cap that waiting cannot clear is the exception. The Photon-shaped provider
 (`chibigeo`) does not retry ChibiGeo's `limit_exceeded`, `quota_exceeded` or
 `subscription_past_due` on a 429: the provider is asked once and the lookup
-moves to the next one, if there is one. That spares the lookup two retries and
+moves to the next one, if there is one. Only `limit_exceeded` is documented as
+a plan cap; the other two are treated as terminal on the assumption that
+waiting cannot clear them. That spares the lookup two retries and
 roughly a second and a half of backoff that cannot help it. A 429 whose body
 does not carry a recognised code is treated as transient, exactly as before, and
 a body that stalls is bounded by the attempt cap like any other slow response.
