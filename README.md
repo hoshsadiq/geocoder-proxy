@@ -62,12 +62,10 @@ lose the point. AGENTS.md has the per-adapter detail; the Photon-shaped provider
 is features-aware, so a body that still carries features is served whatever the
 error value.
 
-Two costs are easy to miss. A capped provider is still paced and still admits
+One cost is easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance
 keeps taking its turn and spending its local allowance on 429s until it is
-removed from the config. And a provider that answers a 200 carrying an error no
-longer settles the walk: the lookup fails over, so every new cell spends the
-next provider's allowance and nothing is cached on that path.
+removed from the config.
 
 ## What it does
 
@@ -85,7 +83,7 @@ next provider's allowance and nothing is cached on that path.
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
 - Exposes Prometheus metrics for cache hits, per-provider latency, errors,
-  remaining quota, and 429 terminal caps (`geocoder_provider_terminal_total`).
+  remaining quota, and terminal caps (`geocoder_provider_terminal_total`).
 
 Providers are registered by type: `chibigeo` (which is Photon-shaped, so it
 fronts any Photon-compatible upstream), `geoapify`, `locationiq` and

@@ -67,10 +67,11 @@ const maxRetries = 2
 // spending the provider's remaining allowance on retries that cannot succeed.
 // body is a prefix of the response, at most MaxErrorBodyBytes long; the returned
 // code names the provider's own error and must not carry coordinates, URLs or
-// credentials. The remainder of the response is drained after the check returns,
-// so the check must not keep the body or expect a second read. Provider packages
-// own their upstream's vocabulary and pass their check to Do; a nil check
-// retries every transient status as before.
+// credentials. The check gets a private copy of that prefix, so keeping it is
+// harmless, but the response stream is not available again; its remainder is
+// drained after the check returns. Provider packages own their upstream's
+// vocabulary and pass their check to Do; a nil check retries every transient
+// status.
 type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
@@ -176,8 +177,8 @@ func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
 	return code, true
 }
 
-// SafeCode reports whether a provider's error code, or a Photon 200-error
-// message, is safe to put into an error that reaches WARN logs: a short
+// SafeCode reports whether a provider's error code, or the message it reports
+// for a 200 error, is safe to put into an error that reaches WARN logs: a short
 // lowercase identifier, the shape every provider error code has. Anything else
 // is dropped or replaced by a generic message, so it cannot smuggle a URL, a
 // coordinate or a credential into the text.

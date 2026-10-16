@@ -344,6 +344,8 @@ func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 		{name: "number past float64 again", rawErr: `1e309`},
 		{name: "negative number past float64", rawErr: `-1e999`},
 		{name: "number past float64 nested", rawErr: `{"code":1e999}`},
+		{name: "huge integer", rawErr: strings.Repeat("9", 400)},
+		{name: "number at the float64 edge", rawErr: `1e308`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -361,8 +363,7 @@ func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
 	}
 }
 
-// TestEmptyErrorFieldIsAGenuineEmpty pins the other side: null, false, zero,
-// an empty string and empty object or array are not errors.
+// TestEmptyErrorFieldIsAGenuineEmpty pins the other side.
 func TestEmptyErrorFieldIsAGenuineEmpty(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -389,6 +390,39 @@ func TestEmptyErrorFieldIsAGenuineEmpty(t *testing.T) {
 			is.Empty(got)
 		})
 	}
+}
+
+// TestStringErrorWithFeaturesIsServed pins the one case the features-aware rule
+// exists for: a body that carries an error string and a usable feature is
+// served, not turned into a 503.
+func TestStringErrorWithFeaturesIsServed(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded","features":[{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal("Good", got[0].Address.Name)
+}
+
+// TestErrorWithUnusableFeaturesIsAFailure pins the result-count gate: a feature
+// the mapping drops leaves no usable result, so a set error fails the lookup
+// rather than settling as a cached empty.
+func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded","features":[{"type":"Feature","properties":{"name":"Bad"},"geometry":{"type":"Point","coordinates":[999,999]}}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err, "an unusable feature must not settle the lookup as an empty")
+	is.Nil(got)
 }
 
 // TestNonStringErrorFieldIsServed pins that the error field is raw: a 200 whose

@@ -68,7 +68,7 @@ func New(reg prom.Registerer) *Metrics {
 		providerTerminal: factory.NewCounterVec(prom.CounterOpts{
 			Namespace: "geocoder",
 			Name:      "provider_terminal_total",
-			Help:      "429 responses carrying a terminal cap code, by provider.",
+			Help:      "Provider responses that will not clear by retrying, by provider.",
 		}, []string{"provider"}),
 	}
 }

@@ -187,69 +187,56 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
 		return nil, err
 	}
-	// A 200 that carries an error and no features is a failure, not an empty
-	// answer: an empty answer is cached and treated as final downstream, so a
-	// swallowed error would lose the point.
-	if len(fc.Features) == 0 && errorFieldSet(fc.Error) {
-		if msg := errorMessage(fc.Error); msg != "" && httpfetch.SafeCode(msg) {
-			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
-		}
-		return nil, errors.New("upstream returned an error response")
-	}
 	results := make([]domain.Result, 0, len(fc.Features))
 	for _, f := range fc.Features {
 		if r, ok := f.toResult(); ok {
 			results = append(results, r)
 		}
 	}
+	// A 200 that carries an error and yields no usable result is a failure,
+	// not an empty answer: an empty answer is cached and treated as final
+	// downstream, so a swallowed error would lose the point. The gate is the
+	// mapped result count, so a feature the mapping drops (bad or missing
+	// geometry) does not settle the lookup as a genuine empty. A usable result
+	// wins over the error field.
+	if msg, set := errorValue(fc.Error); set && len(results) == 0 {
+		if msg != "" && httpfetch.SafeCode(msg) {
+			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
+		}
+		return nil, errors.New("upstream returned an error response")
+	}
 	return results, nil
 }
 
 // featureCollection is the Photon wire shape.
 type featureCollection struct {
-	Features []feature       `json:"features"`
-	Error    json.RawMessage `json:"error"`
+	Features []feature `json:"features"`
+	// Raw so a 200 with a non-string error is not a decode failure.
+	Error json.RawMessage `json:"error"`
 }
 
-func errorMessage(raw json.RawMessage) string {
-	var msg string
-	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {
-		return ""
-	}
-	return msg
-}
-
-// An absent, null, false, zero, empty string or empty object/array is not an
-// error; anything else is, so an unrecognised error shape fails loudly instead
-// of reading as a genuine no-match and being cached.
-func errorFieldSet(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
+// errorValue returns the body's error message when the field is a non-empty
+// JSON string, and whether the field is set to a non-empty value. A value that
+// cannot be inspected is treated as set, and an absent or empty value (null,
+// false, zero, an empty string, an empty object or array) as unset, so an
+// unrecognised error shape fails loudly instead of reading as a genuine
+// no-match and being cached.
+func errorValue(raw json.RawMessage) (msg string, set bool) {
+	trimmed := bytes.TrimSpace(raw)
+	switch string(trimmed) {
+	case "", "null", "false", "{}", "[]":
+		return "", false
 	}
 	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		// raw is valid JSON, so the only failure here is a number outside
-		// float64's range; a value we cannot inspect is treated as set.
-		return true
+	if json.Unmarshal(trimmed, &v) == nil {
+		if f, ok := v.(float64); ok && f == 0 {
+			return "", false
+		}
+		if s, ok := v.(string); ok {
+			return s, s != ""
+		}
 	}
-	switch val := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return val
-	case float64:
-		return val != 0
-	case string:
-		return val != ""
-	case []any:
-		return len(val) > 0
-	case map[string]any:
-		return len(val) > 0
-	default:
-		// Unreachable for encoding/json output; an unknown type is treated as
-		// set, the safe direction.
-		return true
-	}
+	return "", true
 }
 
 type feature struct {
