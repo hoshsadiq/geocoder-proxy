@@ -24,10 +24,10 @@ import (
 // the cap exists so a misbehaving upstream cannot exhaust memory.
 const maxBodyBytes = 16 << 20
 
-// maxErrorBodyBytes caps the body prefix offered to a TerminalCheck. A
+// MaxErrorBodyBytes caps the body prefix offered to a TerminalCheck. A
 // provider's error code sits in a small JSON document, and a large error page
 // must not be buffered or quoted.
-const maxErrorBodyBytes = 4 << 10
+const MaxErrorBodyBytes = 4 << 10
 
 // Redirect policy failures are deterministic: looping or cross-host
 // redirects must not be retried.
@@ -65,12 +65,12 @@ const maxRetries = 2
 // clear by retrying: a plan cap, an exhausted allowance, a suspended
 // subscription. Such a response ends the call at once so the router fails over,
 // instead of spending the provider's remaining allowance on retries that cannot
-// succeed. body is a small prefix of the response; the returned code names the
-// provider's own error and must not carry coordinates, URLs or credentials.
-// The underlying response body is fully read into that prefix and then drained
-// and closed after the check returns, so the check must not keep it or expect a
-// second read. Provider packages own their upstream's vocabulary and pass their
-// check to Do; a nil check retries every transient status as before.
+// succeed. body is a prefix of the response, at most MaxErrorBodyBytes long;
+// the returned code names the provider's own error and must not carry
+// coordinates, URLs or credentials. The remainder of the response is drained and
+// closed after the check returns, so the check must not keep the body or expect
+// a second read. Provider packages own their upstream's vocabulary and pass
+// their check to Do; a nil check retries every transient status as before.
 type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
@@ -116,9 +116,9 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 	if resp.StatusCode != http.StatusOK {
 		if code, ok := classifyTerminal(terminal, resp); ok {
 			if code == "" {
-				return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminalCap)
+				return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminal)
 			}
-			return fmt.Errorf("upstream status %d: %s (%w)", resp.StatusCode, code, domain.ErrProviderTerminalCap)
+			return fmt.Errorf("upstream status %d: %s (%w)", resp.StatusCode, code, domain.ErrProviderTerminal)
 		}
 		if retryableStatus(resp.StatusCode) && attempt < maxRetries {
 			if !sleep(ctx, backoff(attempt, retryAfterHeader(resp.Header.Get("Retry-After")))) {
@@ -155,14 +155,14 @@ func retryableTransport(ctx context.Context, err error) bool {
 }
 
 // classifyTerminal asks the provider's check about a non-200 response, reading
-// at most maxErrorBodyBytes so a huge error page is never buffered. A nil check
+// at most MaxErrorBodyBytes so a huge error page is never buffered. A nil check
 // or a read failure is "not terminal", which keeps the retry path. A terminal
 // outcome is kept even when its code is not safe to echo.
 func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
 	if check == nil {
 		return "", false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 	if err != nil {
 		return "", false
 	}

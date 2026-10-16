@@ -56,9 +56,13 @@ a body that stalls is bounded by the attempt cap like any other slow response.
 The check is attached to the provider type, so every `chibigeo`-typed instance
 has it, whatever upstream it points at.
 
-A 200 whose body carries an `error` field is a failure, not an empty answer: an
+A 200 whose body carries an `error` string is a failure, not an empty answer: an
 empty answer is cached and treated as final downstream, so a swallowed error
-would lose the point. Every provider package checks for it.
+would lose the point. LocationIQ and Nominatim carve out their own no-match
+marker (`Unable to geocode`) first and return a genuine empty; Geoapify and the
+Photon-shaped provider treat any error string as a failure. Photon's no-match
+shape is an empty FeatureCollection, so it needs no carve-out. A non-string
+error value is ignored, so a body that still carries features is served.
 
 ## What it does
 

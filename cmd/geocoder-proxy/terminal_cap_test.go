@@ -81,3 +81,19 @@ func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	is.Equal(2, providerErrorCount(t, c.reg), "each capped provider is one error, no retries")
 	is.Equal(2, terminalCount(t, c.reg), "each capped provider is one terminal cap")
 }
+
+// TestOrdinaryFailureIsNotTerminal pins the negative direction: a failure that
+// is not a terminal response must not touch the terminal counter.
+func TestOrdinaryFailureIsNotTerminal(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	first, _ := cappedUpstream(t, `{"error":"rate_limited"}`)
+	second, _ := cappedUpstream(t, `{"error":"rate_limited"}`)
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout,
+		providerAt(t, first.URL), providerAt(t, second.URL))
+
+	rec := doRequest(c.handler, t.Context())
+
+	must.Equal(http.StatusServiceUnavailable, rec.Code)
+	is.Equal(0, terminalCount(t, c.reg), "a non-terminal failure is not a terminal cap")
+	is.Equal(2, providerErrorCount(t, c.reg))
+}

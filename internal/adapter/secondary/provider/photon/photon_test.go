@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/httpfetch"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
@@ -199,15 +200,15 @@ func alwaysCapped(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
 // httpfetch body cap (4KiB): the first JSON value is decoded, so trailing bytes
 // past it do not matter. Each body must still make exactly one request.
 func TestTerminalCapBodyLongerThanThePrefix(t *testing.T) {
-	const cap = 4096
+	capBytes := httpfetch.MaxErrorBodyBytes
 	base := `{"error":"limit_exceeded"}`
 	tests := []struct {
 		name string
 		size int
 	}{
-		{name: "exactly the cap", size: cap},
-		{name: "one past the cap", size: cap + 1},
-		{name: "eight kilobytes", size: 8192},
+		{name: "exactly the cap", size: capBytes},
+		{name: "one past the cap", size: capBytes + 1},
+		{name: "well past the cap", size: capBytes * 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,8 +252,8 @@ func TestTerminalCapBodyGzipped(t *testing.T) {
 	is.Equal(int32(1), calls.Load())
 }
 
-// TestTerminalCapBodyChunked pins that a chunked response classified before its
-// last chunk arrives still ends the call.
+// TestTerminalCapBodyChunked pins that a chunked response (no Content-Length)
+// is read to EOF and handled like a fixed-length one.
 func TestTerminalCapBodyChunked(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	calls := &atomic.Int32{}
@@ -308,6 +309,41 @@ func TestErrorBodyOn200IsAnError(t *testing.T) {
 			is.NotContains(err.Error(), "51.4774")
 			is.NotContains(err.Error(), "SUPERSECRET")
 			is.Equal(int32(1), calls.Load(), "a 200 is not retried")
+		})
+	}
+}
+
+// TestNonStringErrorFieldIsServed pins that the error field is raw: a 200 whose
+// error is not a string must not fail the decode, or a body that still carries
+// features would regress from an answer to a 503.
+func TestNonStringErrorFieldIsServed(t *testing.T) {
+	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
+	tests := []struct {
+		name   string
+		rawErr string
+	}{
+		{name: "false", rawErr: `false`},
+		{name: "number", rawErr: `42`},
+		{name: "object", rawErr: `{"code":"x"}`},
+		{name: "array", rawErr: `[]`},
+		{name: "empty string", rawErr: `""`},
+		{name: "null", rawErr: `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			body := `{"error":` + tt.rawErr + `,"features":[` + feature + `]}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL, "")
+			got, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.NoError(err, "a non-string error field must not fail the decode")
+			must.Len(got, 1)
+			is.Equal("Good", got[0].Address.Name)
 		})
 	}
 }

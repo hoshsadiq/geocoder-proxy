@@ -1,6 +1,7 @@
 package httpfetch
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +71,7 @@ func TestTerminalResponseNotRetried(t *testing.T) {
 	var out struct{}
 	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
 	must.Error(err)
-	is.Equal("upstream status 429: limit_exceeded (terminal provider cap)", err.Error(), "the error carries the provider's code")
+	is.Equal("upstream status 429: limit_exceeded (terminal provider failure)", err.Error(), "the error carries the provider's code")
 	is.Equal(int32(1), calls.Load(), "a terminal response is not retried")
 }
 
@@ -101,7 +102,7 @@ func TestTerminalCodeSanitised(t *testing.T) {
 			var out struct{}
 			err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
 			must.Error(err)
-			is.Equal("upstream status 429 (terminal provider cap)", err.Error(), "the unsafe code is dropped, the terminal outcome kept")
+			is.Equal("upstream status 429 (terminal provider failure)", err.Error(), "the unsafe code is dropped, the terminal outcome kept")
 			is.Equal(int32(1), calls.Load())
 		})
 	}
@@ -131,6 +132,26 @@ func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
 	must.Error(err)
 	is.Equal(int32(1), calls.Load())
 	is.Less(time.Since(start), time.Second, "a terminal response ignores Retry-After and returns at once")
+}
+
+// TestTerminalCheckBodyIsCapped pins the prefix size against the constant, so a
+// boundary test elsewhere cannot silently stop testing it.
+func TestTerminalCheckBodyIsCapped(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var gotLen atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), MaxErrorBodyBytes*2))
+	}))
+	defer srv.Close()
+
+	check := func(_ int, body []byte) (string, bool) {
+		gotLen.Store(int32(len(body)))
+		return "", false
+	}
+	var out struct{}
+	must.Error(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check))
+	is.Equal(int32(MaxErrorBodyBytes), gotLen.Load())
 }
 
 func TestNonTerminalCheckKeepsRetrying(t *testing.T) {

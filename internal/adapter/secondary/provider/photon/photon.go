@@ -143,10 +143,10 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
-// terminalCapCodes are the ChibiGeo error codes for a plan cap that waiting
+// terminalCodes are the ChibiGeo error codes for a plan cap that waiting
 // cannot clear. A wrong entry only costs the retries we already had, so the
 // list errs towards including a terminal code.
-var terminalCapCodes = map[string]struct{}{
+var terminalCodes = map[string]struct{}{
 	// Confirmed: the documented plan cap, seen live as 429 {"error":"limit_exceeded"}.
 	"limit_exceeded": {},
 	// Inferred: an exhausted allowance, not observed.
@@ -156,7 +156,7 @@ var terminalCapCodes = map[string]struct{}{
 }
 
 // terminalResponse classifies a non-200 response. Only a 429 carrying one of
-// the known cap codes is terminal; everything else, including an unrecognised
+// the known terminal codes is terminal; everything else, including an unrecognised
 // body and any other status, keeps today's retry behaviour. httpfetch caps how
 // much of the body it offers, so the first JSON value is decoded rather than the
 // whole buffer unmarshalled: trailing bytes past the value do not matter, and a
@@ -171,7 +171,7 @@ func terminalResponse(statusCode int, body []byte) (string, bool) {
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&shape); err != nil {
 		return "", false
 	}
-	if _, ok := terminalCapCodes[shape.Error]; !ok {
+	if _, ok := terminalCodes[shape.Error]; !ok {
 		return "", false
 	}
 	return shape.Error, true
@@ -189,9 +189,9 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	}
 	// A 200 carrying an error is a failure, not an empty answer: an empty
 	// answer is cached and treated as final downstream.
-	if fc.Error != "" {
-		if httpfetch.SafeCode(fc.Error) {
-			return nil, fmt.Errorf("upstream returned an error response: %s", fc.Error)
+	if msg := errorMessage(fc.Error); msg != "" {
+		if httpfetch.SafeCode(msg) {
+			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
 		}
 		return nil, errors.New("upstream returned an error response")
 	}
@@ -206,8 +206,20 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 
 // featureCollection is the Photon wire shape.
 type featureCollection struct {
-	Features []feature `json:"features"`
-	Error    string    `json:"error"`
+	Features []feature       `json:"features"`
+	Error    json.RawMessage `json:"error"`
+}
+
+// errorMessage returns the body's error string when the error field is a
+// non-empty JSON string; empty for any other value (null, a number, an object,
+// false) so a body that still carries features is served. The field is raw
+// because a 200 with a non-string error is not a decode failure.
+func errorMessage(raw json.RawMessage) string {
+	var msg string
+	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {
+		return ""
+	}
+	return msg
 }
 
 type feature struct {

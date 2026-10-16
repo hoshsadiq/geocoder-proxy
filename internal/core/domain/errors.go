@@ -23,10 +23,10 @@ var (
 	// the length cap). Adapters map it to a client error (400).
 	ErrInvalidQuery = errors.New("invalid query")
 
-	// ErrProviderTerminalCap marks a provider response that will not clear by
+	// ErrProviderTerminal marks a provider response that will not clear by
 	// retrying: a plan cap, an exhausted allowance, a suspended subscription.
 	// It is still a provider error, so the never-blank rule holds; the router
 	// counts it separately (geocoder_provider_terminal_total) so the terminal
 	// path is measurable apart from an ordinary failure.
-	ErrProviderTerminalCap = errors.New("terminal provider cap")
+	ErrProviderTerminal = errors.New("terminal provider failure")
 )

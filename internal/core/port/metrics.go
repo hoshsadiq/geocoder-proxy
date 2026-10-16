@@ -70,10 +70,10 @@ type Metrics interface {
 	// only called for providers with a configured daily quota.
 	QuotaRemaining(provider string, remaining int)
 
-	// TerminalCap records one provider response that will not clear by
-	// retrying: a plan cap, an exhausted allowance, a suspended subscription.
-	// It is a sub-count of a provider error (the ProviderError outcome and its
-	// label stay as they are), so the terminal path is visible on its own
-	// without changing the five outcome values dashboards and alerts key on.
+	// TerminalCap records one terminal provider response (see
+	// domain.ErrProviderTerminal). It is a sub-count of a provider error (the
+	// ProviderError outcome and its label stay as they are), so the terminal
+	// path is visible on its own without changing the five outcome values
+	// dashboards and alerts key on.
 	TerminalCap(provider string)
 }

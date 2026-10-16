@@ -370,7 +370,7 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Co
 			if done, doneErr := r.budgetCut(ctx, name, d); done {
 				return zero, doneErr
 			}
-			if errors.Is(err, domain.ErrProviderTerminalCap) {
+			if errors.Is(err, domain.ErrProviderTerminal) {
 				r.metrics.TerminalCap(name)
 			}
 			r.metrics.ProviderRequest(name, port.ProviderError, d)
