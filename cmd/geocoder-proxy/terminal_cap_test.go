@@ -82,6 +82,30 @@ func TestAllProvidersTerminalCapIs503(t *testing.T) {
 	is.Equal(2, terminalCount(t, c.reg), "each capped provider is one terminal cap")
 }
 
+// TestErrorBodyOn200Is503AndNotCached pins the no-features case end to end: a
+// 200 carrying an error and no features is a 503, and the error is not cached,
+// so the next request to the same cell asks upstream again rather than serving
+// a cached empty answer.
+func TestErrorBodyOn200Is503AndNotCached(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"limit_exceeded"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newChain(t, config.DefaultRequestTimeout, config.DefaultUpstreamTimeout, providerAt(t, srv.URL))
+
+	first := doRequest(c.handler, t.Context())
+	second := doRequest(c.handler, t.Context())
+
+	must.Equal(http.StatusServiceUnavailable, first.Code)
+	must.Equal(http.StatusServiceUnavailable, second.Code, "an error is not cached as an empty answer")
+	is.Equal(int32(2), calls.Load(), "the second request asks upstream again")
+	is.Equal(0, terminalCount(t, c.reg), "a 200 error is an ordinary error, not a 429 terminal cap")
+}
+
 // TestOrdinaryFailureIsNotTerminal pins the negative direction: a failure that
 // is not a terminal response must not touch the terminal counter.
 func TestOrdinaryFailureIsNotTerminal(t *testing.T) {

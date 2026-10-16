@@ -61,11 +61,10 @@ func NewClient(timeout time.Duration) *http.Client {
 // which fails over to the next provider.
 const maxRetries = 2
 
-// TerminalCheck reports whether a non-200 response is a failure that will not
-// clear by retrying: a plan cap, an exhausted allowance, a suspended
-// subscription. Such a response ends the call at once so the router fails over,
-// instead of spending the provider's remaining allowance on retries that cannot
-// succeed. body is a prefix of the response, at most MaxErrorBodyBytes long;
+// TerminalCheck reports whether a non-200 response is a terminal provider
+// failure (domain.ErrProviderTerminal), one that will not clear by retrying.
+// Such a response ends the call at once so the router fails over, instead of
+// spending the provider's remaining allowance on retries that cannot succeed. body is a prefix of the response, at most MaxErrorBodyBytes long;
 // the returned code names the provider's own error and must not carry
 // coordinates, URLs or credentials. The remainder of the response is drained and
 // closed after the check returns, so the check must not keep the body or expect

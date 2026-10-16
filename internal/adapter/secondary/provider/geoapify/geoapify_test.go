@@ -96,6 +96,23 @@ func TestErrorObjectIsAnError(t *testing.T) {
 	is.Nil(got)
 }
 
+// TestNonStringErrorWithResultsIsServed pins that the error field is raw: a
+// non-string error alongside results must not fail the decode.
+func TestNonStringErrorWithResultsIsServed(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"name":"Somewhere","lat":51.5,"lon":-0.06}],"error":42}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Reverse(t.Context(), domain.ReverseQuery{
+		Coordinates: mustCoords(t, 51.5, -0.06),
+	})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal("Somewhere", got[0].Address.Name)
+}
+
 func TestEntryWithoutCoordinatesIsDropped(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -187,10 +187,11 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, terminalResponse); err != nil {
 		return nil, err
 	}
-	// A 200 carrying an error is a failure, not an empty answer: an empty
-	// answer is cached and treated as final downstream.
-	if msg := errorMessage(fc.Error); msg != "" {
-		if httpfetch.SafeCode(msg) {
+	// A 200 that carries an error and no features is a failure, not an empty
+	// answer: an empty answer is cached and treated as final downstream, so a
+	// swallowed error would lose the point. Features win when both are present.
+	if len(fc.Features) == 0 && errorFieldSet(fc.Error) {
+		if msg := errorMessage(fc.Error); msg != "" && httpfetch.SafeCode(msg) {
 			return nil, fmt.Errorf("upstream returned an error response: %s", msg)
 		}
 		return nil, errors.New("upstream returned an error response")
@@ -211,15 +212,44 @@ type featureCollection struct {
 }
 
 // errorMessage returns the body's error string when the error field is a
-// non-empty JSON string; empty for any other value (null, a number, an object,
-// false) so a body that still carries features is served. The field is raw
-// because a 200 with a non-string error is not a decode failure.
+// non-empty JSON string; empty for any other value. The field is raw because a
+// 200 with a non-string error is not a decode failure.
 func errorMessage(raw json.RawMessage) string {
 	var msg string
 	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {
 		return ""
 	}
 	return msg
+}
+
+// errorFieldSet reports whether a body's error field is set to a non-empty
+// value. An absent, null, false, zero, empty string or empty object/array is
+// not an error; anything else is, so an unrecognised error shape fails loudly
+// instead of reading as a genuine no-match and being cached.
+func errorFieldSet(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	switch val := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return val
+	case float64:
+		return val != 0
+	case string:
+		return val != ""
+	case []any:
+		return len(val) > 0
+	case map[string]any:
+		return len(val) > 0
+	default:
+		return true
+	}
 }
 
 type feature struct {

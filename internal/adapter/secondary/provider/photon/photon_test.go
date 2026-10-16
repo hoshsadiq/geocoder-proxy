@@ -313,6 +313,65 @@ func TestErrorBodyOn200IsAnError(t *testing.T) {
 	}
 }
 
+// TestErrorWithoutFeaturesIsAFailure pins the features-aware rule: an error
+// that is set and non-empty, string or not, fails the lookup when the body has
+// no features, so an unrecognised shape is never cached as a genuine no-match.
+func TestErrorWithoutFeaturesIsAFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		rawErr string
+	}{
+		{name: "object", rawErr: `{"code":"limit_exceeded"}`},
+		{name: "array", rawErr: `["limit_exceeded"]`},
+		{name: "number", rawErr: `7`},
+		{name: "true", rawErr: `true`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"error":` + tt.rawErr + `}`))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err, "an error with no features is a failure, never a cacheable empty")
+			is.Nil(got)
+		})
+	}
+}
+
+// TestEmptyErrorFieldIsAGenuineEmpty pins the other side: null, false, zero,
+// an empty string and empty object or array are not errors.
+func TestEmptyErrorFieldIsAGenuineEmpty(t *testing.T) {
+	tests := []struct {
+		name   string
+		rawErr string
+	}{
+		{name: "null", rawErr: `null`},
+		{name: "false", rawErr: `false`},
+		{name: "zero", rawErr: `0`},
+		{name: "empty string", rawErr: `""`},
+		{name: "empty object", rawErr: `{}`},
+		{name: "empty array", rawErr: `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"error":` + tt.rawErr + `}`))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.NoError(err, "a zero error value is a genuine no-match")
+			is.Empty(got)
+		})
+	}
+}
+
 // TestNonStringErrorFieldIsServed pins that the error field is raw: a 200 whose
 // error is not a string must not fail the decode, or a body that still carries
 // features would regress from an answer to a 503.
