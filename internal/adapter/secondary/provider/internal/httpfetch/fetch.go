@@ -64,12 +64,12 @@ const maxRetries = 2
 // TerminalCheck reports whether a non-200 response is a terminal provider
 // failure (domain.ErrProviderTerminal), one that will not clear by retrying.
 // Such a response ends the call at once so the router fails over, instead of
-// spending the provider's remaining allowance on retries that cannot succeed. body is a prefix of the response, at most MaxErrorBodyBytes long;
-// the returned code names the provider's own error and must not carry
-// coordinates, URLs or credentials. The remainder of the response is drained and
-// closed after the check returns, so the check must not keep the body or expect
-// a second read. Provider packages own their upstream's vocabulary and pass
-// their check to Do; a nil check retries every transient status as before.
+// spending the provider's remaining allowance on retries that cannot succeed.
+// body is a prefix of the response, at most MaxErrorBodyBytes long; the returned
+// code names the provider's own error and must not carry coordinates, URLs or
+// credentials. The check must not keep the body or expect a second read.
+// Provider packages own their upstream's vocabulary and pass their check to Do;
+// a nil check retries every transient status as before.
 type TerminalCheck func(statusCode int, body []byte) (code string, terminal bool)
 
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
@@ -175,10 +175,11 @@ func classifyTerminal(check TerminalCheck, resp *http.Response) (string, bool) {
 	return code, true
 }
 
-// SafeCode reports whether a provider's error code is safe to put into an error
-// that reaches WARN logs: a short lowercase identifier, the shape every provider
-// error code has. Anything else is dropped or replaced by a generic message, so
-// a provider cannot smuggle a URL, a coordinate or a credential into the text.
+// SafeCode reports whether a provider's error code, or a Photon 200-error
+// message, is safe to put into an error that reaches WARN logs: a short
+// lowercase identifier, the shape every provider error code has. Anything else
+// is dropped or replaced by a generic message, so it cannot smuggle a URL, a
+// coordinate or a credential into the text.
 func SafeCode(code string) bool {
 	if code == "" || len(code) > 40 {
 		return false

@@ -157,7 +157,7 @@ var terminalCodes = map[string]struct{}{
 
 // terminalResponse classifies a non-200 response. Only a 429 carrying one of
 // the known terminal codes is terminal; everything else, including an unrecognised
-// body and any other status, keeps today's retry behaviour. httpfetch caps how
+// body and any other status, takes the ordinary retry path. httpfetch caps how
 // much of the body it offers, so the first JSON value is decoded rather than the
 // whole buffer unmarshalled: trailing bytes past the value do not matter, and a
 // value the cap cuts in half fails to decode and falls back to retrying.
@@ -211,9 +211,8 @@ type featureCollection struct {
 	Error    json.RawMessage `json:"error"`
 }
 
-// errorMessage returns the body's error string when the error field is a
-// non-empty JSON string; empty for any other value. The field is raw because a
-// 200 with a non-string error is not a decode failure.
+// The error field is raw because a 200 with a non-string error is not a decode
+// failure.
 func errorMessage(raw json.RawMessage) string {
 	var msg string
 	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {

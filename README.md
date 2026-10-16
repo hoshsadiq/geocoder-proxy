@@ -58,13 +58,9 @@ has it, whatever upstream it points at.
 
 A 200 whose body carries an `error` is a failure, not an empty answer: an empty
 answer is cached and treated as final downstream, so a swallowed error would
-lose the point. LocationIQ and Nominatim carve out their own no-match marker
-(`Unable to geocode`) first and return a genuine empty; Photon's no-match shape
-is an empty FeatureCollection, so it needs no carve-out. Geoapify and the
-Photon-shaped provider treat an error string as a failure, and the Photon one is
-features-aware: an error that is set and non-empty (an object, array, number or
-`true` included) fails the lookup when the body carries no features, while a
-body that still carries features is served, whatever the error value.
+lose the point. AGENTS.md has the per-adapter detail; the Photon-shaped provider
+is features-aware, so a body that still carries features is served whatever the
+error value.
 
 Two costs are easy to miss. A capped provider is still paced and still admits
 against its local daily quota before the request is made, so a capped instance

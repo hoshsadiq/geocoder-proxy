@@ -64,7 +64,7 @@ func New(reg prom.Registerer) *Metrics {
 			Name:      "lookups_total",
 			Help:      "Lookups by result (ok, empty, failed).",
 		}, []string{"result"}),
-		// Terminal caps, a sub-count of provider errors.
+		// Terminal caps: sum(rate(geocoder_provider_terminal_total[5m]))
 		providerTerminal: factory.NewCounterVec(prom.CounterOpts{
 			Namespace: "geocoder",
 			Name:      "provider_terminal_total",
@@ -99,7 +99,7 @@ func (m *Metrics) Lookup(result port.LookupResult) {
 	m.lookupCalls.WithLabelValues(string(result)).Inc()
 }
 
-// TerminalCap records one terminal provider response.
-func (m *Metrics) TerminalCap(provider string) {
+// ProviderTerminal records one terminal provider response.
+func (m *Metrics) ProviderTerminal(provider string) {
 	m.providerTerminal.WithLabelValues(provider).Inc()
 }

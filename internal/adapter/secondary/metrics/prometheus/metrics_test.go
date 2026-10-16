@@ -74,7 +74,7 @@ func TestMetrics(t *testing.T) {
 
 	// A terminal cap is its own family, separate from the five provider
 	// outcomes existing dashboards and alerts key on.
-	m.TerminalCap("chibigeo")
+	m.ProviderTerminal("chibigeo")
 	is.InDelta(1, testutil.ToFloat64(m.providerTerminal.WithLabelValues("chibigeo")), 0.0001)
 	is.Equal(1, testutil.CollectAndCount(m.providerTerminal, "geocoder_provider_terminal_total"))
 }

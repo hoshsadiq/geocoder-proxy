@@ -371,7 +371,7 @@ func callProviders[T any](ctx context.Context, r *Router, lookup func(context.Co
 				return zero, doneErr
 			}
 			if errors.Is(err, domain.ErrProviderTerminal) {
-				r.metrics.TerminalCap(name)
+				r.metrics.ProviderTerminal(name)
 			}
 			r.metrics.ProviderRequest(name, port.ProviderError, d)
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))

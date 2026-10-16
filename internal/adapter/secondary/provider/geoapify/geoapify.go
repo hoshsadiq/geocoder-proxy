@@ -7,7 +7,6 @@ package geoapify
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,8 +142,8 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, &body, nil); err != nil {
 		return nil, err
 	}
-	if msg := errorString(body.Error); msg != "" {
-		return nil, fmt.Errorf("upstream returned an error response: %s", msg)
+	if body.Error != "" {
+		return nil, fmt.Errorf("upstream returned an error response: %s", body.Error)
 	}
 	if body.Results == nil {
 		// The shape we asked for (format=json) carries a results key; its
@@ -166,19 +165,8 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 // absent key (a shape change, or a format=json that never took effect) is
 // distinguishable from a genuinely empty day.
 type response struct {
-	Results *[]entry        `json:"results"`
-	Error   json.RawMessage `json:"error"`
-}
-
-// errorString returns the error string when the error field is a non-empty JSON
-// string; empty for any other value, so a non-string error alongside results is
-// served rather than failing the decode.
-func errorString(raw json.RawMessage) string {
-	var msg string
-	if len(raw) == 0 || json.Unmarshal(raw, &msg) != nil || msg == "" {
-		return ""
-	}
-	return msg
+	Results *[]entry `json:"results"`
+	Error   string   `json:"error"`
 }
 
 type entry struct {

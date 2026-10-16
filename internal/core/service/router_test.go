@@ -94,7 +94,7 @@ func (m *fakeMetrics) QuotaRemaining(name string, remaining int) {
 	m.quotas = append(m.quotas, quotaCall{name: name, remaining: remaining})
 }
 
-func (m *fakeMetrics) TerminalCap(name string) {
+func (m *fakeMetrics) ProviderTerminal(name string) {
 	m.terminals = append(m.terminals, name)
 }
 

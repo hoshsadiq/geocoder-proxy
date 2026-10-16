@@ -144,7 +144,7 @@ func cappedUpstream(t *testing.T, body string, retryAfter string) (*httptest.Ser
 
 // TestRetryPolicyByResponseBody pins which 429 bodies end the call: ChibiGeo's
 // cap codes are terminal (one request, then failover), while a plain rate limit
-// or an unrecognised body keeps today's retry.
+// or an unrecognised body takes the ordinary retry path.
 func TestRetryPolicyByResponseBody(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -276,6 +276,21 @@ func TestTerminalCapBodyChunked(t *testing.T) {
 	must.Error(err)
 	is.Contains(err.Error(), "limit_exceeded")
 	is.Equal(int32(1), calls.Load())
+}
+
+// TestTerminalCapBodyTruncatedMidValue pins the documented fallback: a single
+// JSON value longer than the prefix is cut in half, fails to decode, and takes
+// the ordinary retry path with no code echoed.
+func TestTerminalCapBodyTruncatedMidValue(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	body := `{"error":"limit_exceeded","pad":"` + strings.Repeat("a", httpfetch.MaxErrorBodyBytes) + `"}`
+	srv, calls := alwaysCapped(t, body)
+	c := newTestClient(t, srv.URL, "")
+
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Equal("upstream status 429", err.Error(), "a value the cap cuts in half cannot classify")
+	is.Equal(int32(3), calls.Load(), "and takes the ordinary retry path")
 }
 
 // TestErrorBodyOn200IsAnError covers the parity gap with the other three
