@@ -139,7 +139,7 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	v.Set("format", "json")
 	var body response
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, &body); err != nil {
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), nil, &body, nil); err != nil {
 		return nil, err
 	}
 	if body.Error != "" {

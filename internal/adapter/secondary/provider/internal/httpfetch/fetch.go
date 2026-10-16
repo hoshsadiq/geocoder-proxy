@@ -16,11 +16,16 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
 // maxBodyBytes caps one upstream response. Geocoding answers are kilobytes;
 // the cap exists so a misbehaving upstream cannot exhaust memory.
 const maxBodyBytes = 16 << 20
+
+// MaxErrorBodyBytes caps the body prefix offered to a TerminalCheck.
+const MaxErrorBodyBytes = 4 << 10
 
 // Redirect policy failures are deterministic: looping or cross-host
 // redirects must not be retried.
@@ -54,15 +59,23 @@ func NewClient(timeout time.Duration) *http.Client {
 // which fails over to the next provider.
 const maxRetries = 2
 
+// TerminalCheck reports whether a non-200 response is a terminal provider
+// failure (domain.ErrProviderTerminal), one that will not clear by retrying, so
+// the call ends at once and the router fails over instead of spending the
+// provider's remaining allowance on hopeless retries. body is at most
+// MaxErrorBodyBytes of the response; the response stream is not readable again
+// afterwards. A nil check retries every transient status.
+type TerminalCheck func(statusCode int, body []byte) bool
+
 // Do issues a GET and JSON-decodes the response into out, retrying clearly
-// transient failures (transport errors, 5xx, 429) with bounded backoff.
-// A non-200 status is an error carrying only the status code. Response
+// transient failures (transport errors, 5xx, 429) with bounded backoff. A
+// non-200 status the check reports as terminal is returned at once. Response
 // bodies are drained and closed on every path.
-func Do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any) error {
-	return do(ctx, client, rawURL, headers, out, 0)
+func Do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any, terminal TerminalCheck) error {
+	return do(ctx, client, rawURL, headers, out, terminal, 0)
 }
 
-func do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any, attempt int) error {
+func do(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any, terminal TerminalCheck, attempt int) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return errors.New("building request failed")
@@ -85,7 +98,7 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 		if !sleep(ctx, backoff(attempt, 0)) {
 			return fmt.Errorf("upstream call failed: %w", ctx.Err())
 		}
-		return do(ctx, client, rawURL, headers, out, attempt+1)
+		return do(ctx, client, rawURL, headers, out, terminal, attempt+1)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes))
@@ -93,18 +106,21 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		if classifyTerminal(terminal, resp) {
+			return fmt.Errorf("upstream status %d (%w)", resp.StatusCode, domain.ErrProviderTerminal)
+		}
 		if retryableStatus(resp.StatusCode) && attempt < maxRetries {
 			if !sleep(ctx, backoff(attempt, retryAfterHeader(resp.Header.Get("Retry-After")))) {
 				return fmt.Errorf("upstream call failed: %w", ctx.Err())
 			}
-			return do(ctx, client, rawURL, headers, out, attempt+1)
+			return do(ctx, client, rawURL, headers, out, terminal, attempt+1)
 		}
 		return fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
 
 	dec := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes))
 	if err := dec.Decode(out); err != nil {
-		return fmt.Errorf("decoding upstream response: %w", err)
+		return decodeError(err)
 	}
 	// A well-formed response is exactly one JSON document; trailing bytes
 	// mean a mangled or stitched body and must not pass as an answer.
@@ -112,6 +128,16 @@ func do(ctx context.Context, client *http.Client, rawURL string, headers map[str
 		return errors.New("decoding upstream response: trailing data after JSON document")
 	}
 	return nil
+}
+
+// decodeError describes a decode failure without echoing the body: the stdlib
+// error renders the offending value, which can carry a credential or a
+// coordinate.
+func decodeError(err error) error {
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return fmt.Errorf("decoding upstream response: cannot unmarshal into %s at offset %d", typeErr.Type, typeErr.Offset)
+	}
+	return errors.New("decoding upstream response: malformed JSON")
 }
 
 // retryableTransport reports whether a transport-level failure is worth
@@ -125,6 +151,19 @@ func retryableTransport(ctx context.Context, err error) bool {
 		return false
 	}
 	return !errors.Is(err, errTooManyRedirects) && !errors.Is(err, errCrossHostRedirect)
+}
+
+// classifyTerminal reads at most MaxErrorBodyBytes so a huge error page is
+// never buffered. A nil check or a read failure keeps the retry path.
+func classifyTerminal(check TerminalCheck, resp *http.Response) bool {
+	if check == nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
+	if err != nil {
+		return false
+	}
+	return check(resp.StatusCode, body)
 }
 
 // retryableStatus limits retries to server errors (a blip) and 429 (the

@@ -1,7 +1,9 @@
 package httpfetch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -18,7 +20,7 @@ func TestTransportErrorCarriesNoURL(t *testing.T) {
 	// level; the request URL embeds the secrets the error must not repeat.
 	var out struct{}
 	err := Do(context.Background(), NewClient(time.Second),
-		"http://127.0.0.1:1/v1/reverse?key=SUPERSECRET&lat=51.4774&lon=-0.061&q=home", nil, &out)
+		"http://127.0.0.1:1/v1/reverse?key=SUPERSECRET&lat=51.4774&lon=-0.061&q=home", nil, &out, nil)
 	must.Error(err)
 	must.ErrorContains(err, "upstream call failed")
 	is.NotContains(err.Error(), "SUPERSECRET")
@@ -30,7 +32,7 @@ func TestTransportErrorCarriesNoURL(t *testing.T) {
 func TestBuildErrorCarriesNoURL(t *testing.T) {
 	is, must := assert.New(t), require.New(t)
 	var out struct{}
-	err := Do(context.Background(), NewClient(time.Second), "http://%zz/?key=SUPERSECRET", nil, &out)
+	err := Do(context.Background(), NewClient(time.Second), "http://%zz/?key=SUPERSECRET", nil, &out, nil)
 	must.Error(err)
 	is.NotContains(err.Error(), "SUPERSECRET")
 	is.NotContains(err.Error(), "%zz")
@@ -44,9 +46,110 @@ func TestNon200CarriesOnlyStatus(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	err := Do(context.Background(), NewClient(time.Second), srv.URL+"/?lat=51.4774", nil, &out)
+	err := Do(context.Background(), NewClient(time.Second), srv.URL+"/?lat=51.4774", nil, &out, nil)
 	must.Error(err)
 	is.Equal("upstream status 429", err.Error())
+}
+
+func TestTerminalResponseNotRetried(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
+	}))
+	defer srv.Close()
+
+	check := func(statusCode int, body []byte) bool {
+		return statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}`
+	}
+
+	var out struct{}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
+	must.Error(err)
+	is.Equal("upstream status 429 (terminal provider failure)", err.Error(), "a generic terminal message, no upstream text")
+	is.Equal(int32(1), calls.Load(), "a terminal response is not retried")
+}
+
+func TestTerminalResponseSkipsRetryAfterWait(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
+	}))
+	defer srv.Close()
+
+	check := func(statusCode int, body []byte) bool {
+		return statusCode == http.StatusTooManyRequests && string(body) == `{"error":"limit_exceeded"}`
+	}
+
+	var out struct{}
+	start := time.Now()
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
+	must.Error(err)
+	is.Equal(int32(1), calls.Load())
+	is.Less(time.Since(start), time.Second, "a terminal response ignores Retry-After and returns at once")
+}
+
+// TestTerminalCheckBodyIsCapped pins the prefix against the constant.
+func TestTerminalCheckBodyIsCapped(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	is.Equal(4096, MaxErrorBodyBytes, "changing the cap is a deliberate act")
+	var gotLen atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), MaxErrorBodyBytes*2))
+	}))
+	defer srv.Close()
+
+	check := func(_ int, body []byte) bool {
+		gotLen.Store(int32(len(body)))
+		return false
+	}
+	var out struct{}
+	must.Error(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check))
+	is.Equal(int32(MaxErrorBodyBytes), gotLen.Load())
+}
+
+// TestDecodeErrorNamesGoTypeNotBodyText pins that the decode message carries
+// the Go type, never the offending value.
+func TestDecodeErrorNamesGoTypeNotBodyText(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"osm_id":"lat=51.4774&key=sk-live-DEADBEEF"}`))
+	}))
+	defer srv.Close()
+
+	var out struct {
+		OsmID json.Number `json:"osm_id"`
+	}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil)
+	must.Error(err)
+	is.Contains(err.Error(), "json.Number", "the message names the Go type")
+	is.NotContains(err.Error(), "51.4774")
+	is.NotContains(err.Error(), "DEADBEEF")
+}
+
+func TestNonTerminalCheckKeepsRetrying(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
+	}))
+	defer srv.Close()
+
+	check := func(int, []byte) bool { return false }
+
+	var out struct{}
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, check)
+	must.Error(err)
+	is.Equal(int32(maxRetries+1), calls.Load(), "a check that reports nothing terminal keeps the retry path")
 }
 
 func TestCrossHostRedirectRefused(t *testing.T) {
@@ -63,7 +166,7 @@ func TestCrossHostRedirectRefused(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	err := Do(context.Background(), NewClient(time.Second), srv.URL, map[string]string{"X-Api-Key": "secret"}, &out)
+	err := Do(context.Background(), NewClient(time.Second), srv.URL, map[string]string{"X-Api-Key": "secret"}, &out, nil)
 	must.Error(err)
 	must.ErrorContains(err, "cross-host redirect")
 	is.NotContains(err.Error(), target.URL)
@@ -81,7 +184,7 @@ func TestSameHostRedirectFollowed(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{ Ok bool }
-	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL+"/old", nil, &out))
+	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL+"/old", nil, &out, nil))
 }
 
 func TestRetriesTransientFailures(t *testing.T) {
@@ -97,7 +200,7 @@ func TestRetriesTransientFailures(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{ Ok bool }
-	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out))
+	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil))
 	is.Equal(int32(3), calls.Load(), "two transient 5xx responses are retried")
 	is.True(out.Ok)
 }
@@ -112,7 +215,7 @@ func TestRetriesExhausted(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out)
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil)
 	must.Error(err)
 	must.ErrorContains(err, "upstream status 503")
 	is.Equal(int32(maxRetries+1), calls.Load(), "bounded attempts, then the error surfaces")
@@ -128,7 +231,7 @@ func TestClientErrorsNotRetried(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out)
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil)
 	must.Error(err)
 	is.Equal(int32(1), calls.Load(), "a 404 is not transient")
 }
@@ -148,9 +251,28 @@ func TestRetryAfterHonoured(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out))
+	must.NoError(Do(context.Background(), NewClient(10*time.Second), srv.URL, nil, &out, nil))
 	is.Equal(int32(2), calls.Load())
 	is.GreaterOrEqual(time.Since(start), time.Second, "the retry waits at least the provider's Retry-After")
+}
+
+func TestRetryAfterHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "absent", header: "", want: 0},
+		{name: "seconds under the cap", header: "2", want: 2 * time.Second},
+		{name: "above the cap is capped", header: "600", want: 5 * time.Second},
+		{name: "non-numeric", header: "soon", want: 0},
+		{name: "negative", header: "-1", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, retryAfterHeader(tt.header))
+		})
+	}
 }
 
 func TestContextCancelledDuringBackoff(t *testing.T) {
@@ -163,7 +285,7 @@ func TestContextCancelledDuringBackoff(t *testing.T) {
 	var out struct{}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	err := Do(ctx, NewClient(10*time.Second), srv.URL, nil, &out)
+	err := Do(ctx, NewClient(10*time.Second), srv.URL, nil, &out, nil)
 	must.ErrorIs(err, context.DeadlineExceeded)
 }
 
@@ -177,7 +299,7 @@ func TestRedirectCapRestored(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	err := Do(context.Background(), NewClient(10*time.Second), srv.URL+"/loop", nil, &out)
+	err := Do(context.Background(), NewClient(10*time.Second), srv.URL+"/loop", nil, &out, nil)
 	must.Error(err)
 	must.ErrorContains(err, "stopped after 10 redirects")
 	must.Less(calls.Load(), int32(15), "an infinite redirect loop must be cut short")
@@ -192,7 +314,7 @@ func TestAcceptHeaderSent(t *testing.T) {
 	defer srv.Close()
 
 	var out struct{}
-	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out))
+	must.NoError(Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out, nil))
 }
 
 func TestTrailingDataRejected(t *testing.T) {
@@ -205,7 +327,7 @@ func TestTrailingDataRejected(t *testing.T) {
 	var out struct {
 		Features []any `json:"features"`
 	}
-	err := Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out)
+	err := Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out, nil)
 	must.Error(err)
 	must.ErrorContains(err, "trailing data")
 }
@@ -221,23 +343,7 @@ func TestContextDeadlinePropagates(t *testing.T) {
 	var out struct{}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	err := Do(ctx, NewClient(time.Second), srv.URL, nil, &out)
+	err := Do(ctx, NewClient(time.Second), srv.URL, nil, &out, nil)
 	must.Error(err)
 	must.ErrorIs(err, context.DeadlineExceeded)
-}
-
-func TestDecodeErrorCarriesNoBody(t *testing.T) {
-	is, must := assert.New(t), require.New(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`<html>SECRET ERROR PAGE WITH 51.4774</html>`))
-	}))
-	defer srv.Close()
-
-	var out struct{}
-	err := Do(context.Background(), NewClient(time.Second), srv.URL, nil, &out)
-	must.Error(err)
-	must.ErrorContains(err, "decoding upstream response")
-	is.NotContains(err.Error(), "SECRET")
-	is.NotContains(err.Error(), "51.4774")
-	is.NotContains(err.Error(), "<html>")
 }

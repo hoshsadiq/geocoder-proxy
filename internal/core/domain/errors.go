@@ -22,4 +22,9 @@ var (
 	// ErrInvalidQuery rejects malformed query input (e.g. forward text over
 	// the length cap). Adapters map it to a client error (400).
 	ErrInvalidQuery = errors.New("invalid query")
+
+	// ErrProviderTerminal marks a provider response that will not clear by
+	// retrying. It is still a provider error, and it is counted separately as
+	// geocoder_provider_terminal_total.
+	ErrProviderTerminal = errors.New("terminal provider failure")
 )

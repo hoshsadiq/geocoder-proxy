@@ -7,6 +7,7 @@
 package photon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,6 +143,25 @@ func (c *Client) Forward(ctx context.Context, q domain.ForwardQuery) ([]domain.R
 	return c.get(ctx, "/api", v)
 }
 
+// terminalCapCode is ChibiGeo's documented plan cap: the only geocoding error
+// its docs say waiting cannot clear.
+const terminalCapCode = "limit_exceeded"
+
+// isTerminalCap reports whether a non-200 response is that cap on a 429. The
+// first JSON value is decoded, so trailing bytes past it do not matter.
+func isTerminalCap(statusCode int, body []byte) bool {
+	if statusCode != http.StatusTooManyRequests {
+		return false
+	}
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errBody); err != nil {
+		return false
+	}
+	return errBody.Error == terminalCapCode
+}
+
 func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.Result, error) {
 	headers := map[string]string{}
 	if c.apiKey != "" {
@@ -149,7 +169,10 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 	}
 	var fc featureCollection
 	// The router prefixes provider errors with the provider name.
-	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc); err != nil {
+	if err := httpfetch.Do(ctx, c.http, c.base+path+"?"+v.Encode(), headers, &fc, isTerminalCap); err != nil {
+		if errors.Is(err, domain.ErrProviderTerminal) {
+			return nil, fmt.Errorf("%w: %s", err, terminalCapCode)
+		}
 		return nil, err
 	}
 	results := make([]domain.Result, 0, len(fc.Features))
@@ -158,12 +181,18 @@ func (c *Client) get(ctx context.Context, path string, v url.Values) ([]domain.R
 			results = append(results, r)
 		}
 	}
+	// Guards ChibiGeo's wrapper, not Photon: Photon answers 200 with a
+	// FeatureCollection and puts errors in `message` on a non-200.
+	if fc.Error != nil && *fc.Error != "" && len(results) == 0 {
+		return nil, errors.New("upstream returned an error response")
+	}
 	return results, nil
 }
 
 // featureCollection is the Photon wire shape.
 type featureCollection struct {
 	Features []feature `json:"features"`
+	Error    *string   `json:"error"`
 }
 
 type feature struct {

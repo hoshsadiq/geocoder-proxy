@@ -1,14 +1,21 @@
 package photon
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hoshsadiq/geocoder-proxy/internal/adapter/secondary/provider/internal/httpfetch"
 	"github.com/hoshsadiq/geocoder-proxy/internal/core/domain"
 )
 
@@ -110,6 +117,304 @@ func TestUpstreamErrorIsCoordinateFree(t *testing.T) {
 	is.Contains(err.Error(), "429")
 	is.NotContains(err.Error(), "51.4774", "provider errors must never carry coordinates")
 	is.NotContains(err.Error(), srv.URL, "provider errors must never carry the request URL")
+}
+
+// cappedUpstream answers the first request with a 429 carrying body, then a
+// genuine empty Photon answer, and counts the requests. A terminal response
+// leaves the count at one; anything retried reaches the second request and
+// succeeds.
+func cappedUpstream(t *testing.T, body string, retryAfter string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, calls
+}
+
+// TestRetryPolicyByResponseBody pins which 429 bodies end the call.
+func TestRetryPolicyByResponseBody(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantCalls    int32
+		wantTerminal bool // false means the retried second request answers 200
+	}{
+		{name: "the documented plan cap is terminal", body: `{"error":"limit_exceeded"}`, wantCalls: 1, wantTerminal: true},
+		{name: "rate limited is retried", body: `{"error":"rate_limited"}`, wantCalls: 2},
+		{name: "unknown error code is retried", body: `{"error":"over_query_limit"}`, wantCalls: 2},
+		{name: "another product's quota code is retried", body: `{"error":"quota_exceeded"}`, wantCalls: 2},
+		{name: "another product's billing code is retried", body: `{"error":"subscription_past_due"}`, wantCalls: 2},
+		{name: "non-JSON error body is retried", body: `<html>slow down</html>`, wantCalls: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv, calls := cappedUpstream(t, tt.body, "")
+			c := newTestClient(t, srv.URL, "")
+
+			_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			if !tt.wantTerminal {
+				must.NoError(err, "a non-terminal 429 is retried and the second attempt succeeds")
+			} else {
+				must.Error(err)
+				is.Equal("upstream status 429 (terminal provider failure): limit_exceeded", err.Error())
+			}
+			is.Equal(tt.wantCalls, calls.Load(), "upstream requests for this provider")
+		})
+	}
+}
+
+// alwaysCapped answers every request with a 429 carrying body and counts them,
+// so a test can assert the exact number of upstream requests a body shape makes.
+func alwaysCapped(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, calls
+}
+
+// TestTerminalCapBodyLongerThanThePrefix pins the boundary at the httpfetch cap.
+func TestTerminalCapBodyLongerThanThePrefix(t *testing.T) {
+	capBytes := httpfetch.MaxErrorBodyBytes
+	base := `{"error":"limit_exceeded"}`
+	tests := []struct {
+		name string
+		size int
+	}{
+		{name: "exactly the cap", size: capBytes},
+		{name: "one past the cap", size: capBytes + 1},
+		{name: "well past the cap", size: capBytes * 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			body := base + strings.Repeat("x", tt.size-len(base))
+			must.Len(body, tt.size)
+			srv, calls := alwaysCapped(t, body)
+			c := newTestClient(t, srv.URL, "")
+
+			_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Contains(err.Error(), "terminal provider failure", "the cap survives a body past the prefix")
+			is.Equal(int32(1), calls.Load(), "a long body must not fall back to retrying")
+		})
+	}
+}
+
+func TestTerminalCapBodyGzipped(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write([]byte(`{"error":"limit_exceeded"}`))
+	must.NoError(zw.Close())
+
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write(gz.Bytes())
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Contains(err.Error(), "terminal provider failure")
+	is.Equal(int32(1), calls.Load())
+}
+
+func TestTerminalCapBodyChunked(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	calls := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fl, _ := w.(http.Flusher)
+		for _, part := range []string{`{"error":`, `"limit_`, `exceeded"}`} {
+			_, _ = io.WriteString(w, part)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Contains(err.Error(), "terminal provider failure")
+	is.Equal(int32(1), calls.Load())
+}
+
+// TestTerminalCapBodyTruncatedMidValue pins the fallback when the cap cuts the
+// JSON value in half: the ordinary retry path.
+func TestTerminalCapBodyTruncatedMidValue(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	body := `{"error":"limit_exceeded","pad":"` + strings.Repeat("a", httpfetch.MaxErrorBodyBytes) + `"}`
+	srv, calls := alwaysCapped(t, body)
+	c := newTestClient(t, srv.URL, "")
+
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err)
+	is.Equal("upstream status 429", err.Error(), "a value the cap cuts in half cannot classify")
+	is.Equal(int32(3), calls.Load(), "and takes the ordinary retry path")
+}
+
+// TestErrorBodyOn200IsAnError pins the failure side of the result-count gate.
+func TestErrorBodyOn200IsAnError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "identifier code", body: `{"error":"limit_exceeded"}`},
+		{name: "text with coordinates and key", body: `{"error":"lat=51.4774 key=SUPERSECRET"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			calls := &atomic.Int32{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL, "")
+			got, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Nil(got)
+			is.Equal("upstream returned an error response", err.Error())
+			is.Equal(int32(1), calls.Load(), "a 200 is not retried")
+		})
+	}
+}
+
+// TestNonStringErrorFieldIsAFailure pins that a non-string error fails the
+// lookup, with or without a usable feature.
+func TestNonStringErrorFieldIsAFailure(t *testing.T) {
+	feature := `{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "false with no features", body: `{"error":false}`},
+		{name: "zero with no features", body: `{"error":0}`},
+		{name: "empty object with no features", body: `{"error":{}}`},
+		{name: "empty array with no features", body: `{"error":[]}`},
+		{name: "number with a usable feature", body: `{"error":42,"features":[` + feature + `]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is, must := assert.New(t), require.New(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+			must.Error(err)
+			is.Nil(got)
+		})
+	}
+}
+
+func TestEmptyErrorStringIsAGenuineEmpty(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"","features":[]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+	is.Empty(got)
+}
+
+func TestStringErrorWithFeaturesIsServed(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded","features":[{"type":"Feature","properties":{"name":"Good"},"geometry":{"type":"Point","coordinates":[-0.061,51.4774]}}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.NoError(err)
+	must.Len(got, 1)
+	is.Equal("Good", got[0].Address.Name)
+}
+
+// TestErrorWithUnusableFeaturesIsAFailure pins that a dropped feature leaves no
+// usable result, so a set error fails the lookup.
+func TestErrorWithUnusableFeaturesIsAFailure(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded","features":[{"type":"Feature","properties":{"name":"Bad"},"geometry":{"type":"Point","coordinates":[999,999]}}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL, "").Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+	must.Error(err, "an unusable feature must not settle the lookup as an empty")
+	is.Nil(got)
+}
+
+// TestCapBodyOnNon429IsRetried pins the status gate: only a 429 is classified.
+func TestCapBodyOnNon429IsRetried(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"limit_exceeded"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "")
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+
+	must.Error(err)
+	is.Equal("upstream status 503", err.Error(), "the cap code is not reported for a non-429")
+	is.Equal(int32(3), calls.Load(), "a 5xx keeps its retries")
+}
+
+// TestRateLimitedRetryAfterHonoured pins that a non-terminal 429 waits Retry-After.
+func TestRateLimitedRetryAfterHonoured(t *testing.T) {
+	is, must := assert.New(t), require.New(t)
+	srv, calls := cappedUpstream(t, `{"error":"rate_limited"}`, "1")
+	c := newTestClient(t, srv.URL, "")
+
+	start := time.Now()
+	_, err := c.Reverse(t.Context(), domain.ReverseQuery{Coordinates: mustCoords(t, 51.4774, -0.061)})
+
+	must.NoError(err)
+	is.Equal(int32(2), calls.Load())
+	is.GreaterOrEqual(time.Since(start), time.Second, "the retry waits at least the provider's Retry-After")
 }
 
 func TestEmptyFeatureCollectionIsGenuineEmpty(t *testing.T) {

@@ -35,6 +35,51 @@ batch of lookups queues up and the last in the batch can spend the whole budget
 waiting for its turn. Those answer 503 and get retried, which is better than
 pushing a provider past its limit. AGENTS.md has the detail.
 
+## Retries
+
+A provider call that fails in a way that might pass on its own (a dropped
+connection, a 5xx, a 429 that means "slow down") is retried twice with a short
+backoff: half a second, then a second, with jitter. A `Retry-After` header is
+honoured instead, capped at 5 seconds. `upstream_timeout` (2s by default) bounds
+the whole attempt, wait included, so a `Retry-After` much above a second and a
+half leaves no room to retry and the lookup fails over instead.
+
+A cap that waiting cannot clear is the exception. ChibiGeo documents exactly one
+such error on its geocoding endpoint: `limit_exceeded`, a plan cap on a 429
+whose own docs say retrying after a second does not reset the quota. The
+Photon-shaped provider (`chibigeo`) does not retry it: the provider is asked
+once and the lookup moves to the next one, if there is one. That spares the
+lookup two retries and roughly a second and a half of backoff that cannot help
+it. Every other documented error is retried by the rule above, including
+`rate_limited` (429), `service_unavailable` (503) and `gateway_timeout` (504).
+The two 401 auth errors are not retried and not transient: the retry rule covers
+429 and 5xx, so a 401 fails once and moves to the next provider. A 429 whose
+body carries no recognised cap is transient too, and a body that stalls is
+bounded by the attempt cap like any other slow response. The check is attached
+to the provider type, so every `chibigeo`-typed instance has it, whatever
+upstream it points at.
+
+A 200 whose body carries an `error` is a failure, not an empty answer: an empty
+answer is cached and treated as final downstream, so a swallowed error would
+lose the point. Photon itself never does this: its handler always answers 200
+with a FeatureCollection, empty when nothing matches (`GenericSearchHandler` and
+`GeoJsonFormatter` in its source), and its errors are `{"message":...}` on a
+non-200. The guard is for ChibiGeo's wrapper, whose docs put errors on
+401/429/503/504 and never describe a 200 with an error. The Photon-shaped
+provider is features-aware, so features are served when at least one of them is
+usable. AGENTS.md has the per-adapter detail.
+
+Provider errors on the terminal path and in the shared HTTP layer's decode are
+built from the status, the Go type and an offset, never from the response text,
+so a credential or a coordinate a body smuggles into one cannot reach a log. The
+other three adapters still echo their own upstream error text; AGENTS.md records
+that gap.
+
+One cost is easy to miss. A capped provider is still paced and still admits
+against its local daily quota before the request is made, so a capped instance
+keeps taking its turn and spending its local allowance on 429s until it is
+removed from the config.
+
 ## What it does
 
 - Answers `GET /reverse` and `GET /api` as GeoJSON in the shape Dawarich
@@ -50,8 +95,8 @@ pushing a provider past its limit. AGENTS.md has the detail.
 - Never returns an empty result to hide a failure. An empty answer means a
   provider genuinely found nothing; an outage is an error, so Dawarich retries
   the point instead of marking it geocoded.
-- Exposes Prometheus metrics for cache hits, per-provider latency, errors and
-  remaining quota.
+- Exposes Prometheus metrics for cache hits, per-provider latency, errors,
+  remaining quota, and terminal caps (`geocoder_provider_terminal_total`).
 
 Providers are registered by type: `chibigeo` (which is Photon-shaped, so it
 fronts any Photon-compatible upstream), `geoapify`, `locationiq` and
